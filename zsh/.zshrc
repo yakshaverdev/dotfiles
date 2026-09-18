@@ -142,7 +142,6 @@ alias grep='rg'
 alias du='dust'
 alias top='btop'
 alias diff='delta'
-alias rm='rm -i'            # Prompt before each removal
 
 alias cpp='g++-15 -std=gnu++20 -O2 -Wall -DLOCAL'
 
