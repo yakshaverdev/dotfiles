@@ -63,7 +63,7 @@
     "ollama": {
       "api_url": "http://localhost:11434"
     },
-    "provider": "open_ai_compatible_api",
+    "provider": "zed",
     "mode": "eager",
     "open_ai_compatible_api": {
       "api_url": "https://omniroute.akshaydeshraj.me/v1/completions",
