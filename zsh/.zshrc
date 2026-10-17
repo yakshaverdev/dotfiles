@@ -45,6 +45,7 @@ setopt no_beep                   # Disable terminal beep
 
 # ─── PATH Configuration (consolidated, deduped) ─────────────────
 path=(
+  "/Applications/Visual Studio Code.app/Contents/Resources/app/bin"
   $HOME/.amp/bin
   $HOME/.antigravity/antigravity/bin
   $HOME/.opencode/bin
