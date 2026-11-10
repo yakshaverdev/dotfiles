@@ -1,0 +1,17 @@
+{
+  "respectGitignore": true,
+  "skipDangerousModePermissionPrompt": true,
+  "autoUpdatesChannel": "stable",
+  "theme": "dark-ansi",
+  "enabledPlugins": {
+    "pyright-lsp@claude-plugins-official": true,
+    "rust-analyzer-lsp@claude-plugins-official": true,
+    "clangd-lsp@claude-plugins-official": true,
+    "codex@openai-codex": true,
+    "skit@skit-ai": true
+  },
+  "extraKnownMarketplaces": {
+    "skit-ai": { "source": { "source": "github", "repo": "skit-ai/dot-claude" } },
+    "openai-codex": { "source": { "source": "github", "repo": "openai/codex-plugin-cc" } }
+  }
+}

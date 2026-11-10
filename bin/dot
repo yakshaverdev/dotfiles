@@ -1,0 +1,626 @@
+#!/usr/bin/env bash
+# dot — cross-platform dotfiles bootstrap / maintenance CLI.
+#
+# Works on macOS (darwin) and Ubuntu/Debian (linux). GNU Stow is used to
+# symlink packages from stow/<group>/<pkg> into $HOME.
+set -euo pipefail
+
+# ── Resolve the repo from this script's real path ──────────────────────────
+# macOS's readlink has no -f, so fall back to a portable resolution loop.
+resolve_realpath() {
+  local p="$1" d
+  while [[ -L "$p" ]]; do
+    d="$(cd -P "$(dirname "$p")" && pwd)"
+    p="$(readlink "$p")"
+    [[ "$p" != /* ]] && p="$d/$p"
+  done
+  printf '%s/%s\n' "$(cd -P "$(dirname "$p")" && pwd)" "$(basename "$p")"
+}
+
+if command -v readlink >/dev/null 2>&1 && readlink -f / >/dev/null 2>&1; then
+  SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+else
+  SELF="$(resolve_realpath "${BASH_SOURCE[0]}")"
+fi
+DOTFILES="$(cd "$(dirname "$SELF")/.." && pwd)"
+
+case "$(uname -s)" in
+  Darwin) OS=darwin ;;
+  Linux)  OS=linux ;;
+  *) echo "Unsupported OS: $(uname -s)" >&2; exit 1 ;;
+esac
+
+STOW_GROUPS=(common "$OS")
+BACKUP_ROOT="$HOME/.dotfiles-backup"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP_DIR="$BACKUP_ROOT/$STAMP"
+BACKUP_USED=0
+
+FAILURES=()
+MANUAL=()
+
+# ── Small helpers ──────────────────────────────────────────────────────────
+info() { printf '%s\n' "$*"; }
+warn() { printf 'WARN: %s\n' "$*" >&2; }
+err()  { printf 'ERROR: %s\n' "$*" >&2; }
+fail() { FAILURES+=("$*"); }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+mise_bin() {
+  if have mise; then
+    command -v mise
+  elif [[ -x "$HOME/.local/bin/mise" ]]; then
+    printf '%s\n' "$HOME/.local/bin/mise"
+  else
+    return 1
+  fi
+}
+
+# Move a real file/dir out of the way, preserving its path relative to $HOME.
+backup_path() {
+  local rel="$1" src="$HOME/$1" dst="$BACKUP_DIR/$1"
+  [[ -e "$src" || -L "$src" ]] || return 0
+  mkdir -p "$(dirname "$dst")"
+  mv "$src" "$dst"
+  BACKUP_USED=1
+  info "  backed up ~/$rel → $dst"
+}
+
+# Emit the relative target paths from stow "simulate" conflict output.
+stow_conflict_targets() {
+  local out="$1"
+  printf '%s\n' "$out" | sed -n \
+    -e 's/^.*existing target is neither a link nor a directory: //p' \
+    -e 's/^.*existing target is not owned by stow: //p' \
+    -e 's/^.*cannot stow .* over existing target \(.*\) since .*/\1/p' \
+    -e 's/^.*CONFLICT[^:]*: *//p' \
+  | sed -e 's/[[:space:]]*$//' -e '/^$/d' -e '/^WARNING/d' -e '/^All operations/d'
+}
+
+# Dangling symlinks whose target path mentions a dotfiles checkout.
+find_legacy_links() {
+  local d
+  for d in "$HOME" "$HOME/.config" "$HOME/.claude" "$HOME/Applications"; do
+    [[ -d "$d" ]] || continue
+    local maxdepth=1
+    case "$d" in
+      "$HOME") maxdepth=1 ;;
+      "$HOME/.config"|"$HOME/.claude") maxdepth=4 ;;
+      "$HOME/Applications") maxdepth=3 ;;
+    esac
+    find "$d" -maxdepth "$maxdepth" -type l 2>/dev/null || true
+  done | while IFS= read -r link; do
+    [[ -e "$link" ]] && continue
+    local target
+    target="$(readlink "$link" 2>/dev/null || true)"
+    [[ "$target" == *dotfiles* ]] && printf '%s\n' "$link"
+  done
+}
+
+# ── install ────────────────────────────────────────────────────────────────
+cmd_install() {
+  info "=== dot install (${OS}) ==="
+
+  # 1. ~/.env
+  if [[ ! -f "$HOME/.env" ]]; then
+    err "$HOME/.env not found."
+    info ""
+    info "  cp \"$DOTFILES/.env.example\" $HOME/.env"
+    info "  \$EDITOR $HOME/.env   # fill in real values"
+    info ""
+    exit 1
+  fi
+  chmod 600 "$HOME/.env"
+  # shellcheck disable=SC1091
+  source "$HOME/.env"
+  : "${GIT_USER_NAME:=}"
+  : "${GIT_USER_EMAIL:=}"
+
+  # 2. OS packages
+  info "→ Installing OS packages..."
+  if [[ "$OS" == darwin ]]; then
+    if ! xcode-select -p >/dev/null 2>&1; then
+      info "  Installing Xcode Command Line Tools..."
+      xcode-select --install || true
+      info "  Press Enter after the installer completes."
+      read -r || true
+    fi
+    if ! have brew; then
+      info "  Installing Homebrew..."
+      /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    fi
+    if [[ -x /opt/homebrew/bin/brew ]]; then
+      eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [[ -x /usr/local/bin/brew ]]; then
+      eval "$(/usr/local/bin/brew shellenv)"
+    fi
+    brew bundle --file="$DOTFILES/packages/Brewfile" || fail "brew bundle"
+  else
+    local apt_file="" pkgs=()
+    if [[ -f "$DOTFILES/packages/apt.txt" ]]; then
+      apt_file="$DOTFILES/packages/apt.txt"
+    elif [[ -f "$DOTFILES/packages/apt-packages.txt" ]]; then
+      apt_file="$DOTFILES/packages/apt-packages.txt"
+    fi
+    if [[ -n "$apt_file" ]]; then
+      while IFS= read -r line; do
+        line="${line%%#*}"
+        line="$(printf '%s' "$line" | xargs)"
+        [[ -n "$line" ]] && pkgs+=("$line")
+      done < "$apt_file"
+      if ((${#pkgs[@]})); then
+        if sudo -n true 2>/dev/null; then
+          sudo apt-get update || fail "apt-get update"
+          sudo apt-get install -y "${pkgs[@]}" || fail "apt-get install"
+        else
+          warn "sudo requires a password; run this yourself:"
+          info "  sudo apt-get update && sudo apt-get install -y ${pkgs[*]}"
+          MANUAL+=("Install apt packages (sudo apt-get install -y ${pkgs[*]})")
+        fi
+      fi
+    else
+      warn "packages/apt.txt not found — skipping apt packages"
+    fi
+  fi
+
+  # 3. mise
+  if ! mise_bin >/dev/null; then
+    info "→ Installing mise..."
+    curl https://mise.run | sh || fail "install mise"
+  fi
+  local MISE
+  MISE="$(mise_bin || true)"
+
+  # 4. Legacy cleanup (before stowing)
+  info "→ Removing stale dotfiles symlinks..."
+  local removed=0 link
+  while IFS= read -r link; do
+    rm -f "$link"
+    info "  removed $link"
+    removed=$((removed + 1))
+  done < <(find_legacy_links)
+  if ((removed == 0)); then info "  none found"; fi
+
+  if [[ "$OS" == darwin ]]; then
+    for label in com.dotfiles.autosync com.dotfiles.diffcheck; do
+      launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+      rm -f "$HOME/Library/LaunchAgents/$label.plist"
+    done
+    if [[ -L "$HOME/Applications/Arc.app" ]]; then
+      local arc_target
+      arc_target="$(readlink "$HOME/Applications/Arc.app")"
+      if [[ "$arc_target" == *dotfiles* ]]; then
+        rm -f "$HOME/Applications/Arc.app"
+        info "  removed legacy ~/Applications/Arc.app symlink"
+      fi
+    fi
+  fi
+
+  # 5. Stow
+  info "→ Stowing packages..."
+  local pkg group root simulate rel
+  for group in "${STOW_GROUPS[@]}"; do
+    root="$DOTFILES/stow/$group"
+    [[ -d "$root" ]] || continue
+    for pkg in "$root"/*/; do
+      [[ -d "$pkg" ]] || continue
+      pkg="$(basename "$pkg")"
+      simulate="$(stow --no-folding -d "$root" -t "$HOME" --simulate "$pkg" 2>&1 || true)"
+      while IFS= read -r rel; do
+        [[ -n "$rel" ]] || continue
+        # Real files/dirs are backed up. A symlink into another dotfiles
+        # checkout (old layout or a different clone) is replaced.
+        if [[ -L "$HOME/$rel" ]]; then
+          if [[ "$(readlink "$HOME/$rel")" == *dotfiles* ]]; then
+            rm -f "$HOME/$rel"
+            info "  removed foreign dotfiles link ~/$rel"
+          fi
+        elif [[ -f "$HOME/$rel" || -d "$HOME/$rel" ]]; then
+          backup_path "$rel"
+        fi
+      done < <(stow_conflict_targets "$simulate")
+      if ! stow --no-folding -d "$root" -t "$HOME" --restow "$pkg" 2>&1 | sed 's/^/  /'; then
+        fail "stow $group/$pkg"
+      fi
+    done
+  done
+
+  # 6. Git identity
+  info "→ Configuring git identity..."
+  local identity="$HOME/.config/git/identity"
+  if [[ -f "$identity" ]]; then
+    info "  ~/.config/git/identity already exists — leaving it alone"
+  elif [[ -z "$GIT_USER_NAME" ]]; then
+    err "GIT_USER_NAME is empty in ~/.env — skipping git identity"
+    MANUAL+=("Set GIT_USER_NAME/GIT_USER_EMAIL in ~/.env and re-run dot install")
+  elif [[ "$GIT_USER_NAME" == *"@"* || "$GIT_USER_NAME" == "user.email" ]]; then
+    err "GIT_USER_NAME looks wrong (\"$GIT_USER_NAME\") — must be a full name, not an email — skipping git identity"
+    MANUAL+=("Fix GIT_USER_NAME in ~/.env (full name, e.g. \"Ada Lovelace\")")
+  elif [[ -z "$GIT_USER_EMAIL" ]]; then
+    err "GIT_USER_EMAIL is empty in ~/.env — skipping git identity"
+    MANUAL+=("Set GIT_USER_EMAIL in ~/.env and re-run dot install")
+  else
+    mkdir -p "$(dirname "$identity")"
+    {
+      printf '[user]\n'
+      printf '\tname = %s\n' "$GIT_USER_NAME"
+      printf '\temail = %s\n' "$GIT_USER_EMAIL"
+    } > "$identity"
+    chmod 600 "$identity"
+    info "  wrote ~/.config/git/identity"
+  fi
+
+  if [[ -f "$HOME/.gitconfig" && ! -L "$HOME/.gitconfig" ]]; then
+    backup_path ".gitconfig"
+    local extra=""
+    extra="$(grep -E '^\[' "$BACKUP_DIR/.gitconfig" 2>/dev/null | grep -vE '^\[(user|credential)' || true)"
+    info "  git now reads ~/.config/git/config"
+    if [[ -n "$extra" ]]; then
+      info "  note: the old ~/.gitconfig had extra sections: $(printf '%s ' "$extra")"
+    fi
+  fi
+
+  # 7. mise install (non-fatal)
+  if [[ -n "$MISE" ]]; then
+    info "→ mise install..."
+    if ! "$MISE" install --yes 2>&1 | sed 's/^/  /'; then
+      fail "mise install"
+    fi
+  else
+    fail "mise not available"
+  fi
+
+  # 8. bat cache + git hooks
+  if have bat; then
+    info "→ bat cache --build"
+    bat cache --build >/dev/null 2>&1 || fail "bat cache --build"
+  fi
+  info "→ git core.hooksPath"
+  git -C "$DOTFILES" config core.hooksPath "$DOTFILES/hooks" || fail "git hooksPath"
+
+  # 9. OS-specific post-install
+  if [[ "$OS" == darwin ]]; then
+    info "→ macOS defaults..."
+    bash "$DOTFILES/scripts/macos-defaults.sh" || fail "macOS defaults"
+    if [[ -d "$HOME/Library/Application Support/zen" ]]; then
+      info "→ Linking Zen profile..."
+      bash "$DOTFILES/zen/link-profile.sh" || fail "zen link-profile"
+    fi
+    open -a AeroSpace 2>/dev/null || true
+    brew services start sketchybar 2>/dev/null || true
+    brew services start borders 2>/dev/null || true
+    mkdir -p "$HOME/Desktop/Screenshots"
+  else
+    if systemctl --user show-environment >/dev/null 2>&1; then
+      info "→ systemctl --user daemon-reload"
+      systemctl --user daemon-reload || fail "systemctl --user daemon-reload"
+    fi
+  fi
+
+  # 10. Login shell
+  local zsh_path
+  zsh_path="$(command -v zsh || true)"
+  if [[ -z "$zsh_path" ]]; then
+    warn "zsh not installed — cannot set login shell"
+    MANUAL+=("Install zsh, then: chsh -s \$(command -v zsh)")
+  elif [[ "${SHELL:-}" != *zsh ]]; then
+    info "→ Setting login shell to zsh..."
+    if [[ "$OS" == darwin ]]; then
+      if chsh -s "$zsh_path" 2>/dev/null; then
+        info "  login shell updated"
+      else
+        info "  Run manually: chsh -s $zsh_path"
+        MANUAL+=("chsh -s $zsh_path")
+      fi
+    else
+      if sudo -n chsh -s "$zsh_path" "$USER" 2>/dev/null; then
+        info "  login shell updated"
+      else
+        info "  Run manually: sudo chsh -s $zsh_path $USER"
+        MANUAL+=("sudo chsh -s $zsh_path $USER")
+      fi
+    fi
+  fi
+
+  # 11. Directories, dot on PATH, T3 sync
+  mkdir -p "$HOME/.zsh/cache"
+  info "→ Linking dot into ~/.local/bin"
+  mkdir -p "$HOME/.local/bin"
+  ln -sfn "$DOTFILES/bin/dot" "$HOME/.local/bin/dot"
+  if [[ -d "${T3CODE_HOME:-$HOME/.t3}/userdata" ]]; then
+    info "→ dot t3 push"
+    cmd_t3 push || fail "dot t3 push"
+  fi
+
+  # 12. GitHub auth (never prompt)
+  if ! gh auth status >/dev/null 2>&1; then
+    MANUAL+=("Authenticate GitHub: gh auth login")
+  fi
+
+  # 13. Summary
+  info ""
+  info "=== dot install complete ==="
+  if ((${#FAILURES[@]})); then
+    info ""
+    info "Failures:"
+    for f in "${FAILURES[@]}"; do info "  - $f"; done
+  fi
+  if ((BACKUP_USED)); then
+    info ""
+    info "Conflicting files backed up to: $BACKUP_DIR"
+  fi
+  if [[ "$OS" == darwin ]]; then
+    MANUAL+=("Grant Accessibility permission to AeroSpace")
+    MANUAL+=("Log out and back in for macOS defaults to take effect")
+  fi
+  MANUAL+=("Sign in to T3 Code")
+  MANUAL+=("Log in to agent CLIs you use (claude, codex, opencode)")
+  if ((${#MANUAL[@]})); then
+    info ""
+    info "Manual steps remaining:"
+    for m in "${MANUAL[@]}"; do info "  - $m"; done
+  fi
+}
+
+# ── doctor ─────────────────────────────────────────────────────────────────
+cmd_doctor() {
+  local problems=0 warnings=0
+  ok()   { printf '  ✓ %s\n' "$*"; }
+  bad()  { printf '  ✗ %s\n' "$*"; problems=$((problems + 1)); }
+  note() { printf '  ! %s\n' "$*"; warnings=$((warnings + 1)); }
+
+  info "=== dot doctor (${OS}) ==="
+
+  # Symlinks for every stowed file
+  info "→ Stowed file symlinks"
+  local group root pkg file rel dest real
+  for group in "${STOW_GROUPS[@]}"; do
+    root="$DOTFILES/stow/$group"
+    [[ -d "$root" ]] || continue
+    for pkg in "$root"/*/; do
+      [[ -d "$pkg" ]] || continue
+      pkg="$(basename "$pkg")"
+      while IFS= read -r -d '' file; do
+        [[ -f "$file" && ! -L "$file" ]] || continue
+        rel="${file#"$root/$pkg/"}"
+        dest="$HOME/$rel"
+        if [[ -L "$dest" ]]; then
+          real="$(readlink -f "$dest" 2>/dev/null || true)"
+          if [[ "$real" == "$(readlink -f "$file")" ]]; then
+            ok "$rel"
+          else
+            bad "$rel → ${real:-<broken>} (expected $file)"
+          fi
+        elif [[ -e "$dest" ]]; then
+          bad "$rel is a real file (expected symlink to $file)"
+        else
+          bad "$rel missing (expected symlink to $file)"
+        fi
+      done < <(find "$root/$pkg" -type f -print0 | sort -z)
+    done
+  done
+
+  # Dangling symlinks into a dotfiles checkout
+  info "→ Dangling dotfiles symlinks"
+  local link any=0
+  while IFS= read -r link; do
+    bad "dangling: $link → $(readlink "$link")"
+    any=1
+  done < <(find_legacy_links)
+  ((any == 0)) && ok "none"
+
+  # Commands
+  info "→ Commands"
+  local c
+  for c in zsh stow mise git gh claude codex opencode starship atuin fzf rg eza bat zoxide delta; do
+    if [[ "$c" == mise ]]; then
+      if mise_bin >/dev/null; then ok "mise"; else bad "mise not installed"; fi
+    elif have "$c"; then
+      ok "$c"
+    else
+      bad "$c not found"
+    fi
+  done
+
+  # Login shell
+  info "→ Login shell"
+  local login_shell=""
+  if [[ "$OS" == darwin ]]; then
+    login_shell="$(dscl . -read "$HOME" UserShell 2>/dev/null | awk '{print $2}' || true)"
+  else
+    login_shell="$(getent passwd "$USER" 2>/dev/null | cut -d: -f7 || true)"
+  fi
+  if [[ "$login_shell" == *zsh ]]; then
+    ok "$login_shell"
+  else
+    bad "login shell is ${login_shell:-unknown} (expected zsh)"
+  fi
+
+  # mise missing tools
+  info "→ mise tools"
+  local MISE missing
+  MISE="$(mise_bin || true)"
+  if [[ -z "$MISE" ]]; then
+    bad "mise not installed"
+  else
+    missing="$("$MISE" ls --missing 2>/dev/null || true)"
+    missing="$(printf '%s\n' "$missing" | sed '/^[[:space:]]*$/d' || true)"
+    if [[ -z "$missing" ]]; then
+      ok "no missing tools"
+    else
+      while IFS= read -r line; do
+        [[ -n "$line" ]] && bad "mise missing: $line"
+      done <<< "$missing"
+    fi
+  fi
+
+  # OS packages
+  info "→ Packages"
+  if [[ "$OS" == darwin ]]; then
+    if have brew; then
+      if brew bundle check --file "$DOTFILES/packages/Brewfile" >/dev/null 2>&1; then
+        ok "brew bundle satisfied"
+      else
+        bad "brew bundle has missing packages (run: brew bundle --file $DOTFILES/packages/Brewfile)"
+      fi
+    else
+      bad "brew not installed"
+    fi
+  else
+    local apt_file=""
+    [[ -f "$DOTFILES/packages/apt.txt" ]] && apt_file="$DOTFILES/packages/apt.txt"
+    [[ -z "$apt_file" && -f "$DOTFILES/packages/apt-packages.txt" ]] && apt_file="$DOTFILES/packages/apt-packages.txt"
+    if [[ -z "$apt_file" ]]; then
+      note "packages/apt.txt not found"
+    else
+      local line
+      while IFS= read -r line; do
+        line="${line%%#*}"; line="$(printf '%s' "$line" | xargs)"
+        [[ -z "$line" ]] && continue
+        if dpkg -s "$line" >/dev/null 2>&1; then
+          ok "$line"
+        else
+          bad "$line not installed"
+        fi
+      done < "$apt_file"
+    fi
+  fi
+
+  # Git identity
+  info "→ Git identity"
+  if [[ -f "$HOME/.config/git/identity" ]]; then
+    local uname_val
+    uname_val="$(git config --global user.name 2>/dev/null || true)"
+    if [[ -z "$uname_val" ]]; then
+      bad "git user.name is unset"
+    elif [[ "$uname_val" == *"@"* ]]; then
+      bad "git user.name looks like an email: $uname_val"
+    else
+      ok "user.name = $uname_val"
+    fi
+  else
+    bad "$HOME/.config/git/identity missing"
+  fi
+
+  # T3 Code
+  info "→ T3 Code"
+  if [[ -d "${T3CODE_HOME:-$HOME/.t3}/userdata" ]]; then
+    if cmd_t3 diff >/dev/null 2>&1; then
+      ok "settings/keybindings in sync"
+    else
+      bad "T3 settings differ (run: dot t3 pull)"
+    fi
+  else
+    ok "T3 Code not installed here"
+  fi
+
+  # Repo cleanliness (warning only)
+  info "→ Repo"
+  if [[ -n "$(git -C "$DOTFILES" status --porcelain 2>/dev/null || true)" ]]; then
+    note "working tree has uncommitted changes"
+  else
+    ok "clean working tree"
+  fi
+
+  info ""
+  if ((problems > 0)); then
+    info "$problems problem(s), $warnings warning(s)"
+    return 1
+  fi
+  info "All checks passed ($warnings warning(s))"
+  return 0
+}
+
+# ── t3 ─────────────────────────────────────────────────────────────────────
+t3_userdata() { printf '%s\n' "${T3CODE_HOME:-$HOME/.t3}/userdata"; }
+
+t3_require() {
+  local ud
+  ud="$(t3_userdata)"
+  if [[ ! -d "$ud" ]]; then
+    info "T3 Code not installed here"
+    return 1
+  fi
+  return 0
+}
+
+filter_settings() {
+  jq -S 'del(.projectSettingsOverrides, .projectAutoPullOverrides, .sourceControlHosts)'
+}
+
+cmd_t3() {
+  local action="${1:-}"
+  local ud repo="$DOTFILES/t3"
+  ud="$(t3_userdata)"
+
+  case "$action" in
+    pull)
+      if ! t3_require; then return 0; fi
+      mkdir -p "$repo"
+      cp "$ud/keybindings.json" "$repo/keybindings.json"
+      filter_settings < "$ud/settings.json" > "$repo/settings.base.json"
+      info "Pulled T3 Code settings into $repo"
+      ;;
+    push)
+      if ! t3_require; then return 0; fi
+      if [[ ! -f "$repo/keybindings.json" || ! -f "$repo/settings.base.json" ]]; then
+        err "No tracked T3 settings in $repo (run: dot t3 pull on the other machine and commit)"
+        return 1
+      fi
+      local ts
+      ts="$(date +%Y%m%d-%H%M%S)"
+      mkdir -p "$BACKUP_ROOT/$ts/t3"
+      for f in keybindings.json settings.json; do
+        [[ -f "$ud/$f" ]] && cp "$ud/$f" "$BACKUP_ROOT/$ts/t3/$f"
+      done
+      info "  backed up live T3 files to $BACKUP_ROOT/$ts/t3"
+      cp "$repo/keybindings.json" "$ud/keybindings.json.tmp"
+      mv "$ud/keybindings.json.tmp" "$ud/keybindings.json"
+      if [[ -f "$ud/settings.json" ]]; then
+        local tmp="$ud/settings.json.tmp.$$"
+        jq -s '.[0] * .[1]' "$ud/settings.json" "$repo/settings.base.json" > "$tmp"
+        mv "$tmp" "$ud/settings.json"
+      else
+        local tmp="$ud/settings.json.tmp.$$"
+        cp "$repo/settings.base.json" "$tmp"
+        mv "$tmp" "$ud/settings.json"
+      fi
+      info "Pushed T3 Code settings into $ud"
+      ;;
+    diff)
+      if ! t3_require; then return 0; fi
+      local rc=0
+      if ! diff -u "$repo/keybindings.json" "$ud/keybindings.json"; then rc=1; fi
+      if ! diff -u "$repo/settings.base.json" <(filter_settings < "$ud/settings.json"); then rc=1; fi
+      [[ $rc -eq 0 ]] && info "T3 Code settings are in sync"
+      return "$rc"
+      ;;
+    *)
+      err "usage: dot t3 pull|push|diff"
+      return 1
+      ;;
+  esac
+}
+
+# ── main ───────────────────────────────────────────────────────────────────
+usage() {
+  cat <<EOF
+Usage: dot <command>
+
+Commands:
+  install   Bootstrap/refresh this machine (stow, packages, mise, git, T3)
+  doctor    Read-only health check
+  t3 pull   Copy live T3 Code settings into the repo
+  t3 push   Apply repo T3 Code settings to the live app
+  t3 diff   Show differences between live and tracked T3 settings
+EOF
+}
+
+case "${1:-}" in
+  install) cmd_install ;;
+  doctor)  cmd_doctor ;;
+  t3)      shift; cmd_t3 "${1:-}" ;;
+  -h|--help|help|"") usage ;;
+  *) err "unknown command: $1"; usage; exit 1 ;;
+esac

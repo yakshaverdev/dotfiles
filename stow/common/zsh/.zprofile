@@ -1,12 +1,6 @@
-
-eval "$(/opt/homebrew/bin/brew shellenv)"
-
-# Created by `pipx` on 2025-05-01 16:49:19
-export PATH="$PATH:$HOME/.local/bin"
-
-# Added by Obsidian
-export PATH="$PATH:/Applications/Obsidian.app/Contents/MacOS"
-
-# >>> Codex installer >>>
-export PATH="/Users/akshaydeshraj/.local/bin:$PATH"
-# <<< Codex installer <<<
+# Login-shell setup. Keep this minimal: ~/.zshrc (via ~/.config/zsh/*)
+# does the real work. Only the macOS Homebrew bootstrap belongs here, and
+# it is a no-op on Linux.
+if [[ -x /opt/homebrew/bin/brew ]]; then
+  eval "$(/opt/homebrew/bin/brew shellenv)"
+fi

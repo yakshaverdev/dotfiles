@@ -8,9 +8,10 @@ preview_command = "eza --tree --level=2 --icons --color=always --git-ignore {}"
 name = "main"
 path = "~"
 
+# Lowercase "code" resolves on Linux and on case-insensitive macOS volumes.
 [[startup_session]]
 name = "dotfiles"
-path = "~/Code/personal/dotfiles"
+path = "~/code/personal/dotfiles"
 
 [[startup_session]]
 name = "notes"

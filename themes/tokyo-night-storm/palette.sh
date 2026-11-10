@@ -72,7 +72,7 @@ export TN_ACCENT_ALT_ARGB="$TN_BLUE_ARGB"
 # ── Helper: emit fzf --color string from current palette ────────
 # Usage:  --color="$(tn_fzf_colors)"
 tn_fzf_colors() {
-  cat <<EOF
+  command cat <<EOF
 bg+:${TN_SELECTION_BG},bg:${TN_BG},fg:${TN_FG},fg+:${TN_FG},hl:${TN_YELLOW},hl+:${TN_YELLOW},info:${TN_CYAN},marker:${TN_GREEN},prompt:${TN_BLUE},spinner:${TN_MAGENTA},pointer:${TN_RED},header:${TN_BLUE},border:${TN_BORDER},separator:${TN_BORDER},scrollbar:${TN_BORDER},label:${TN_CYAN},query:${TN_FG}
 EOF
 }

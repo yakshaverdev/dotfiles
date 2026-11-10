@@ -1,8 +1,60 @@
-[tools]
-elixir = "1.19.5-otp-28"
-node = "22"
-ruby = "3"
+# Single cross-platform tool list for macOS (arm64) and Linux (x64).
+# Runtimes and CLI tools are managed by mise on both machines; the lockfile
+# next to this file carries the exact resolved versions.
 
 [settings]
 idiomatic_version_file_enable_tools = ["python"]
 activate_aggressive = true
+lockfile = true
+
+[tools]
+# ─── Runtimes ───────────────────────────────────────────────────
+node = "22"
+ruby = "3"
+erlang = "28"
+elixir = "1.19.5-otp-28"
+go = "latest"
+python = "3.13"
+
+# ─── CLI tools ──────────────────────────────────────────────────
+ripgrep = "latest"
+fd = "latest"
+fzf = "latest"
+eza = "latest"
+bat = "latest"
+zoxide = "latest"
+starship = "latest"
+atuin = "latest"
+delta = "latest"
+lazygit = "latest"
+dust = "latest"
+jq = "latest"
+yq = "latest"
+yazi = "latest"
+gh = "latest"
+direnv = "latest"
+shellcheck = "latest"
+shfmt = "latest"
+gitleaks = "latest"
+uv = "latest"
+ruff = "latest"
+btop = "latest"
+ast-grep = "latest"
+lazydocker = "latest"
+
+# sesh has no registry short name in this mise version.
+"aqua:joshmedeski/sesh" = "latest"
+
+# ─── npm ────────────────────────────────────────────────────────
+"npm:pnpm" = "latest"
+"npm:sfw" = "latest"
+"npm:ccusage" = "latest"
+"npm:pyright" = "latest"
+"npm:defuddle" = "latest"
+
+# ─── pipx ───────────────────────────────────────────────────────
+"pipx:git-filter-repo" = "latest"
+
+# ─── go ─────────────────────────────────────────────────────────
+"go:golang.org/x/tools/gopls" = "latest"
+"go:honnef.co/go/tools/cmd/staticcheck" = "latest"

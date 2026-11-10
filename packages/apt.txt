@@ -1,0 +1,27 @@
+# Linux (Debian/Ubuntu) packages. CLI tools and runtimes come from mise;
+# this list is only the OS-level base plus build deps for mise-compiled
+# ruby and erlang.
+zsh
+stow
+git
+curl
+build-essential
+unzip
+tmux
+mosh
+zsh-autosuggestions
+zsh-syntax-highlighting
+pipx
+ca-certificates
+gnupg
+xz-utils
+
+# Build dependencies for mise-compiled ruby / erlang
+libssl-dev
+libyaml-dev
+zlib1g-dev
+libreadline-dev
+libncurses-dev
+libffi-dev
+autoconf
+m4

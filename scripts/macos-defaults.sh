@@ -3,6 +3,7 @@ set -euo pipefail
 
 echo "Configuring macOS defaults..."
 
+DOTFILES_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # ===== Dock =====
 defaults write com.apple.dock autohide -bool true
 defaults write com.apple.dock autohide-delay -float 0
@@ -47,9 +48,15 @@ defaults delete NSGlobalDomain AppleAccentColor 2>/dev/null || true
 # Mail, Notes, text fields.
 defaults write NSGlobalDomain AppleHighlightColor -string "0.752941 0.792157 0.960784 Other"
 # Wallpaper — Tokyo Night Storm. Palette-derived, reproducible via wallpapers/generate.sh.
-DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
 WALLPAPER="$DOTFILES_DIR/wallpapers/01_tokyo-night-storm-glow.png"
-if [[ -f "$WALLPAPER" ]]; then
+if [[ ! -f "$WALLPAPER" ]]; then
+  echo "Wallpaper missing; generating from palette..."
+  if ! bash "$DOTFILES_DIR/wallpapers/generate.sh" "$DOTFILES_DIR/wallpapers"; then
+    echo "Wallpaper generation failed; skipping wallpaper step."
+    WALLPAPER=""
+  fi
+fi
+if [[ -n "$WALLPAPER" && -f "$WALLPAPER" ]]; then
   osascript -e "tell application \"System Events\" to tell every desktop to set picture to \"$WALLPAPER\"" 2>/dev/null || true
 fi
 

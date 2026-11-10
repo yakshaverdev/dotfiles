@@ -1,140 +1,148 @@
 # dotfiles
 
-macOS dev setup: zsh + AeroSpace + SketchyBar + Ghostty + tmux + Zed
+Personal dev environment for two machines:
 
-Clone, add secrets, run one script. Uses [GNU Stow](https://www.gnu.org/software/stow/) for symlink management.
+- **macOS laptop** (Apple Silicon, Homebrew at `/opt/homebrew`) — AeroSpace,
+  SketchyBar, Ghostty, Zed, tmux, zsh.
+- **Ubuntu 24.04 VPS** (x86_64, no Homebrew) — tmux, zsh, CLI tooling, systemd.
 
-## Quick Start
+Configs are symlinked into `$HOME` with [GNU Stow](https://www.gnu.org/software/stow/).
+CLI tools and runtimes are installed with [mise](https://mise.jdx.dev/).
+
+## Quick start
 
 ```bash
 git clone https://github.com/akshaydeshraj/dotfiles ~/Code/personal/dotfiles
 cd ~/Code/personal/dotfiles
-
-# Create your secrets file
-cp .env.example ~/.env
-vim ~/.env  # Fill in real values
-
-# Bootstrap everything
-chmod +x install.sh
-./install.sh
+cp .env.example ~/.env && $EDITOR ~/.env   # fill in real values
+./bootstrap
 ```
 
-## What's Included
+`bootstrap` installs the minimum needed to run the CLI (Xcode CLT + Homebrew +
+`stow jq` on macOS; `stow jq git curl` via apt on Linux), then hands off to
+`dot install`.
 
-| Package | Configs | Description |
-|---------|---------|-------------|
-| `zsh` | `.zshrc`, `.zprofile` | Shell config with lazy-loading, modern CLI aliases |
-| `git` | `.config/git/ignore` | Global gitignore (git config set by install.sh) |
-| `tmux` | `.tmux.conf`, `.config/tmux/` | Terminal multiplexer, fzf session switcher, yazi/lazygit popups |
-| `ghostty` | `.config/ghostty/config` | Terminal emulator |
-| `wm` | `.config/aerospace/`, `.config/sketchybar/` | Tiling WM + hotkeys + status bar |
-| `prompt` | `.config/starship.toml` | Starship prompt (Tokyo Night Storm) |
-| `zed` | `.config/zed/settings.json` | Editor (vim mode, Tokyo Night Storm) |
-| `mise` | `.config/mise/config.toml` | Runtime manager (Node LTS, Ruby 3) |
-| `btop` | `.config/btop/btop.conf` | System monitor |
-| `gh` | `.config/gh/config.yml` | GitHub CLI |
-| `claude` | `.claude/CLAUDE.md`, `.claude/pstack-models.md`, `.claude/agents/oc-worker.md` | Global Claude Code instructions, pstack model overrides, and the `oc-worker` agent |
-| `doom` | `.config/doom/` | Doom Emacs config (Tokyo Night Storm) |
-| `atuin` | `.config/atuin/themes/` | Atuin shell history theme |
-| `bat` | `.config/bat/themes/` | bat syntax theme (Tokyo Night Storm tmTheme) |
-| `zen` | `chrome/userChrome.css`, `chrome/userContent.css` | Zen browser Tokyo Night Storm theme (linked into profiles via `zen/link-profile.sh`, not stowed) |
+## Layout
 
-`claude` is the only package meant to be stowed on Linux machines too. There, stow it on its own and do not run `install.sh`:
+```
+bin/dot                 # cross-platform CLI (install / doctor / t3)
+bootstrap               # first-run entry point
+hooks/pre-commit        # gitleaks secret scan
+packages/Brewfile       # macOS packages
+packages/apt.txt        # Linux packages (one per line, # comments)
+scripts/macos-defaults.sh
+themes/tokyo-night-storm/palette.sh
+wallpapers/generate.sh  # regenerates the (gitignored) PNGs
+zen/link-profile.sh
+t3/                     # portable T3 Code settings (keybindings + base settings)
+
+stow/common/<pkg>       # both OSes: atuin bat btop claude gh git mise prompt
+                        #            tmux zsh
+stow/darwin/<pkg>       # macOS only: ghostty wm zed
+stow/linux/<pkg>        # Linux only: systemd
+```
+
+Each package mirrors a path under `$HOME`:
 
 ```bash
-stow --no-folding -t ~ claude
+stow --no-folding -d "$DOTFILES/stow/<group>" -t "$HOME" <pkg>
 ```
 
-## Theme
+## `dot` commands
 
-Active theme: **Tokyo Night Storm**. Source-of-truth: [`themes/tokyo-night-storm/palette.sh`](themes/tokyo-night-storm/palette.sh). Full mapping in [`themes/tokyo-night-storm/THEME.md`](themes/tokyo-night-storm/THEME.md). Previous theme (Cobalt2) is archived under [`themes/cobalt2/`](themes/cobalt2/).
+| Command | What it does |
+|---|---|
+| `dot install` | Idempotent bootstrap/refresh: packages, mise, legacy cleanup, stow, git identity, hooks, services, T3 push, `~/.local/bin/dot` symlink |
+| `dot doctor` | Read-only health check: symlinks, commands, login shell, mise tools, packages, git identity, T3 drift |
+| `dot t3 pull` | Copy live T3 Code settings into `t3/` |
+| `dot t3 push` | Apply `t3/` settings to the live T3 Code install |
+| `dot t3 diff` | Diff live vs tracked T3 settings |
+
+After the first install, `dot` is on your `PATH` via `~/.local/bin/dot`.
+
+## Adding a package
+
+1. Create `stow/<group>/<pkg>/...` mirroring the target path, e.g.
+   `stow/common/foo/.config/foo/config.toml`.
+2. Pick the group: `common` (both OSes), `darwin` (macOS only), or `linux`
+   (Linux only).
+3. Run `dot install` (it stows every package in `common` + the current OS), or
+   stow just the new one:
+
+   ```bash
+   stow --no-folding -d stow/common -t ~ foo
+   ```
+
+## Adding a CLI tool
+
+Add it to `stow/common/mise/.config/mise/config.toml`, then lock and install:
+
+```bash
+mise lock -g -p linux-x64,macos-arm64   # lock for both machines
+mise install
+```
+
+Commit `config.toml` and `mise.lock` together. Anything that is not
+available through mise (GUI apps, system daemons) belongs in `packages/Brewfile`
+or `packages/apt.txt` instead.
+
+## T3 Code settings
+
+T3 Code rewrites `settings.json` and `keybindings.json` atomically under
+`${T3CODE_HOME:-$HOME/.t3}/userdata`, so they are **never** stowed — they are
+copied.
+
+- Change settings in the app → `dot t3 pull` → commit `t3/`.
+- On the other machine → `dot t3 push` → restart/reload T3 Code.
+
+`t3/settings.base.json` is a portable subset: project overrides, auto-pull
+overrides, and source-control hosts (tokens) are stripped on pull. Push
+deep-merges the live file with the base, with `t3/` winning.
 
 ## Secrets
 
-All secrets live in `~/.env` (never committed). See `.env.example` for required variables:
+Secrets live in `~/.env` (chmod 600, never committed). `.env.example` lists the
+required variables. Project secrets are injected by the Infisical wrappers in
+`~/.config/zsh/infisical.zsh` (`claude`, `codex`, `pi`, `aws`); nothing secret
+belongs in a stowed file.
 
-- `BW_SESSION` - Bitwarden CLI session token
-- `HETZNER_IP` / `NAS_IP` - Remote host IPs for SSH aliases
-- `GIT_USER_NAME` / `GIT_USER_EMAIL` - Git identity
+## Agent shells
 
-## What install.sh Does
+Claude Code, Codex, OpenCode and T3 Code snapshot `~/.zshrc` for their own
+shells. When `CLAUDECODE`, `T3CODE_THREAD_ID`, `CODEX_SANDBOX`, `CODEX_THREAD_ID`
+or `OPENCODE` is set, `~/.zshrc` exports `DOT_AGENT_SHELL=1` and skips the
+tool-replacement aliases (`grep→rg`, `cat→bat`, `ls→eza`, …) and the Infisical
+agent wrappers. Agents get plain tools and the real CLIs.
 
-1. Validates `~/.env` exists
-2. Installs Xcode CLI tools + Homebrew
-3. Installs all packages from `Brewfile`
-4. Backs up conflicting dotfiles, then stows all packages
-5. Configures git from env vars
-6. Applies macOS defaults (Dock, Finder, keyboard, screenshots)
-7. Installs mise runtimes (Node, Ruby)
-8. Installs global npm + pipx packages (pinned versions)
-9. Starts AeroSpace and the SketchyBar services
-10. Prompts for `gh auth login`
+Machine-local, untracked shell config goes in `~/.config/zsh/local.zsh`.
 
-## Manual Steps After Install
+Git identity is **not** in the repo. `dot install` writes
+`~/.config/git/identity` from `GIT_USER_NAME` / `GIT_USER_EMAIL`, which
+`~/.config/git/config` includes. `GIT_USER_NAME` must be a full name
+(e.g. `Ada Lovelace`), never an email address.
 
-- **SIP**: Re-enable SIP from macOS Recovery if you disabled it for the previous window manager. AeroSpace does not require SIP changes.
-- **Accessibility**: Grant permission to AeroSpace (System Settings > Privacy & Security > Accessibility)
-- **Spaces**: Keep one native macOS Space per display. AeroSpace provides six workspaces (browser, terminal, editor, chat, pkm, passwords).
-- **Logout**: Some macOS defaults require logout/restart
+## Theme
 
-## Auto-Sync Daemon
+**Tokyo Night Storm**, defined in
+[`themes/tokyo-night-storm/palette.sh`](themes/tokyo-night-storm/palette.sh)
+(the source of truth). App-side hex values are propagated manually where the app
+cannot import shell variables — see
+[`themes/tokyo-night-storm/THEME.md`](themes/tokyo-night-storm/THEME.md).
+Wallpapers are generated from the palette with `wallpapers/generate.sh`.
 
-A launchd agent runs every 10 minutes to:
-- Regenerate `Brewfile`, `npm-global-packages.txt`, `pipx-packages.txt` from system state
-- Detect config file changes (via stow symlinks)
-- Auto-commit and push to GitHub
+## tmux keybinds
 
-```bash
-# Check status
-launchctl list | grep dotfiles
+- `Alt+K` — fzf session switcher (popup)
+- `Alt+J` — switch to last session
+- `prefix + e` — toggle yazi file explorer
+- `prefix + g` — lazygit popup
 
-# View logs
-tail -f ~/.local/log/dotfiles-sync.log
+## Manual steps
 
-# Manually trigger a sync
-./sync-daemon.sh
+After `dot install`:
 
-# Stop the daemon
-launchctl bootout gui/$(id -u)/com.dotfiles.autosync
-
-# Restart the daemon
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.dotfiles.autosync.plist
-```
-
-## Updating
-
-```bash
-cd ~/Code/personal/dotfiles
-git pull
-# Re-stow changed packages:
-stow --restow --no-folding -t ~ <package>
-```
-
-## Adding a New Config
-
-```bash
-mkdir newapp
-# Mirror the target path inside it:
-mkdir -p newapp/.config/newapp
-cp ~/.config/newapp/config newapp/.config/newapp/config
-# Add to STOW_PACKAGES in install.sh, then:
-stow --no-folding -t ~ newapp
-```
-
-## tmux Keybinds
-
-- `Alt+K`: fzf session switcher (popup), shows `●` for current session and `🤖` when Claude is waiting
-- `Alt+J`: switch to last session
-- `Alt+B`: Claude fork overlay (`claude --continue --fork-session`)
-- `prefix + e`: toggle yazi file explorer
-- `prefix + g`: lazygit popup
-
-A previous Rust-based worktree/workspaces plugin lived at `tmux/plugins/tmux-project-workspaces/`. It was removed in favour of a minimal config; the snapshot is preserved on the `worktree-experiment` git tag.
-
-## Key Design Decisions
-
-- **Stow `--no-folding`**: Creates individual symlinks inside `~/.config/` rather than replacing the directory
-- **`wm/` bundles AeroSpace and SketchyBar**: AeroSpace owns the hotkeys and sends workspace changes to SketchyBar.
-- **Git config not in repo**: Contains email, set by `install.sh` from env vars
-- **SSH config excluded**: Contains infrastructure details, managed manually
-- **Package versions pinned**: npm and pipx packages have version locks for reproducibility
+- **macOS**: grant Accessibility permission to AeroSpace; log out and back in
+  for the full set of `defaults` changes; keep one native Space per display.
+- **Both**: sign in to T3 Code, then log in to the agent CLIs you use
+  (`claude`, `codex`, `opencode`); run `gh auth login` if not already
+  authenticated.

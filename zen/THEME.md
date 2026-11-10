@@ -24,7 +24,7 @@ Manual sync:
 bash zen/link-profile.sh
 ```
 
-The autosync daemon only syncs Zen when `DOTFILES_SYNC_ZEN=1` is set.
+`dot install` runs this automatically when a Zen profile exists.
 
 ## Next Steps
 

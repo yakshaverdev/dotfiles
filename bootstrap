@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# bootstrap — first-run entry point. Works before stow/jq/mise exist.
+#
+#   git clone <repo> ~/Code/personal/dotfiles
+#   cd ~/Code/personal/dotfiles
+#   ./bootstrap
+set -euo pipefail
+
+DOTFILES="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+case "$(uname -s)" in
+  Darwin) OS=darwin ;;
+  Linux)  OS=linux ;;
+  *) echo "Unsupported OS: $(uname -s)" >&2; exit 1 ;;
+esac
+
+echo "→ Bootstrapping prerequisites for $OS..."
+
+if [[ "$OS" == darwin ]]; then
+  if ! xcode-select -p >/dev/null 2>&1; then
+    echo "  Installing Xcode Command Line Tools..."
+    xcode-select --install || true
+    echo "  Press Enter once the installer finishes."
+    read -r || true
+  fi
+  if ! command -v brew >/dev/null 2>&1; then
+    echo "  Installing Homebrew..."
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  fi
+  if [[ -x /opt/homebrew/bin/brew ]]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+  elif [[ -x /usr/local/bin/brew ]]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+  fi
+  brew install stow jq || true
+else
+  missing=()
+  for c in stow jq git curl; do
+    command -v "$c" >/dev/null 2>&1 || missing+=("$c")
+  done
+  if ((${#missing[@]})); then
+    echo "  Installing: ${missing[*]}"
+    if sudo -n true 2>/dev/null; then
+      sudo apt-get update
+      sudo apt-get install -y "${missing[@]}"
+    else
+      echo ""
+      echo "sudo needs a password. Run this, then re-run ./bootstrap:"
+      echo "  sudo apt-get update && sudo apt-get install -y ${missing[*]}"
+      exit 1
+    fi
+  fi
+fi
+
+echo "→ Running dot install..."
+exec "$DOTFILES/bin/dot" install "$@"
