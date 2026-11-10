@@ -23,7 +23,8 @@ $line_break\
 $character"""
 
 [env_var.DOT_CTX]
-format = " [⎔ $env_value]($style)"
+# Ends with a space like the default modules ("on main ").
+format = "as [ $env_value]($style) "
 style = "bold yellow"
 
 [character]
