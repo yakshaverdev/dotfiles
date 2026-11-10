@@ -1,0 +1,7 @@
+# gitleaks config: default rules plus repo-specific false positives.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "T3 Code keybindings use a \"key\" field for shortcuts, not secrets"
+paths = ['''^t3/keybindings\.json$''']
