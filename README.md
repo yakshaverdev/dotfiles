@@ -128,7 +128,7 @@ deep-merges the live file with the base, with `t3/` winning.
 
 Secrets live in `~/.env` (chmod 600, never committed). `.env.example` lists the
 required variables. Project secrets are injected by the Infisical wrappers in
-`~/.config/zsh/infisical.zsh` (`claude`, `codex`, `pi`, `aws`); nothing secret
+`~/.config/zsh/infisical.zsh` (`claude`, `codex`, `pi`); nothing secret
 belongs in a stowed file.
 
 ## Agent shells

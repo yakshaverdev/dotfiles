@@ -1,7 +1,7 @@
 # ─── Infisical multi-account routing ─────────────────────────────
-# Two self-hosted Infisical instances ("profiles") are kept logged in via
-# `infisical login --domain=...`. Both accounts live in `loggedInUsers`
-# inside ~/.infisical/infisical-config.json.
+# Self-hosted Infisical instances ("profiles") are kept logged in via
+# `infisical login --domain=...`. Accounts live in `loggedInUsers` inside
+# ~/.infisical/infisical-config.json. Only the personal instance is routed.
 #
 # Important: Infisical CLI v0.43 ignores the --domain flag for routing —
 # every request is sent to whichever domain matches the file's
@@ -29,9 +29,7 @@
 #
 # Cwd-based domain resolution, highest precedence first:
 #   1. $INFISICAL_PROFILE env var (explicit override)
-#   2. $PWD under ~/Code/work/*       → skit
-#   3. $PWD under ~/Code/personal/*   → personal
-#   4. fallback                       → personal
+#   2. fallback                       → personal
 #
 # To add a new repo: drop a `.infisical.json` with `workspaceId` and `_domain`
 # at its root. To add a new profile: extend _resolve_infisical_domain below
@@ -41,22 +39,15 @@
 # directly — no injection, no errors.
 _resolve_infisical_domain() {
   local profile="${INFISICAL_PROFILE:-}"
-  if [ -z "$profile" ]; then
-    case "$PWD/" in
-      $HOME/Code/work/*)     profile=skit ;;
-      $HOME/Code/personal/*) profile=personal ;;
-      *)                     profile=personal ;;
-    esac
-  fi
+  [ -z "$profile" ] && profile=personal
   case "$profile" in
-    skit)     echo "https://infisical.skit.ai" ;;
     personal) echo "https://infisical.akshaydeshraj.me" ;;
     *) echo "unknown infisical profile: $profile" >&2; return 1 ;;
   esac
 }
 
 # Switch the active Infisical user/domain in ~/.infisical/infisical-config.json
-# to the one matching `target_domain` (e.g. https://infisical.skit.ai). This
+# to the one matching `target_domain` (e.g. https://infisical.akshaydeshraj.me). This
 # is required because Infisical CLI's --domain flag is ignored for routing;
 # only the active-user pointer steers requests. Atomic via temp file +
 # os.replace. No-op if the target is already active or the config is missing.
@@ -187,18 +178,3 @@ pi() {
   _run_project_agent pi "$@"
 }
 
-# AWS CLI — credentials injected from Infisical (work account).
-# Project ID lives in ~/.aws/.infisical.json; domain is fixed since AWS
-# creds only exist in the work instance regardless of cwd. The
-# infisical_set_active_user call is required because the CLI's --domain
-# flag is decorative; routing follows the active user in
-# ~/.infisical/infisical-config.json.
-unalias aws 2>/dev/null
-aws() {
-  if ! (( $+commands[infisical] )); then
-    command aws "$@"
-    return
-  fi
-  infisical_set_active_user https://infisical.skit.ai || return $?
-  infisical run --domain=https://infisical.skit.ai --project-config-dir="$HOME/.aws" --env=prod --silent --log-level=warn -- command aws "$@"
-}

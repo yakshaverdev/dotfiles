@@ -166,7 +166,7 @@ def transform_source(src: str) -> str:
     src = re.sub(r'^(@name\s+.+?)\s+Catppuccin\s*$',
                  r'\1 Tokyo Night Storm', src, flags=re.MULTILINE)
     src = re.sub(r'^@author\s+Catppuccin\s*$',
-                 '@author Tokyo Night Storm port (akshay@skit.ai)', src,
+                 '@author Tokyo Night Storm port (mail@akshaydeshraj.me)', src,
                  flags=re.MULTILINE)
     src = re.sub(r'^@description\s+Soothing pastel theme for (.+)$',
                  r'@description Tokyo Night Storm theme for \1', src,
@@ -189,7 +189,7 @@ def transform_usercss_data(data: dict) -> dict:
     if isinstance(data.get("name"), str):
         data["name"] = data["name"].replace(" Catppuccin", " Tokyo Night Storm")
     if data.get("author") == "Catppuccin":
-        data["author"] = "Tokyo Night Storm port (akshay@skit.ai)"
+        data["author"] = "Tokyo Night Storm port (mail@akshaydeshraj.me)"
     if isinstance(data.get("description"), str):
         data["description"] = data["description"].replace(
             "Soothing pastel theme", "Tokyo Night Storm theme"
@@ -210,7 +210,7 @@ def transform_entry(entry: dict) -> dict:
     if isinstance(new.get("name"), str):
         new["name"] = new["name"].replace(" Catppuccin", " Tokyo Night Storm")
     if new.get("author") == "Catppuccin":
-        new["author"] = "Tokyo Night Storm port (akshay@skit.ai)"
+        new["author"] = "Tokyo Night Storm port (mail@akshaydeshraj.me)"
     if isinstance(new.get("description"), str):
         new["description"] = new["description"].replace(
             "Soothing pastel theme", "Tokyo Night Storm theme"
