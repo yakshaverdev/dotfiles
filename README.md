@@ -281,6 +281,14 @@ personal secrets after a strict context, applies the new context, and sets
 `DOT_CTX`. Starship shows `⎔ <context>` while a client context is active.
 This runs in agent shells too, so agents inherit the right client keys.
 
+Agent command shells are non-interactive, so they do not read `~/.zshrc`.
+`~/.zshenv` applies the context when an agent marker is set (`CLAUDECODE`,
+`T3CODE_THREAD_ID`, `CODEX_THREAD_ID`, `CODEX_SANDBOX` or `OPENCODE`), and
+the VPS T3 unit sets `BASH_ENV=~/.config/zsh/contexts.bash` for bash commands.
+Only the agent's command shells switch context: the long-lived agent CLI
+process itself keeps the T3 environment (and therefore the personal values it
+started with).
+
 `dots secret sync` refreshes every context cache. A failing client project
 warns and keeps that context's previous files, so one broken client does not
 affect personal secrets or the other clients. `dots secret doctor` reports
