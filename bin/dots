@@ -245,6 +245,19 @@ cmd_install() {
     done
   done
 
+  # 5a. dots on PATH (the sync timer/agent started below runs ~/.local/bin/dots)
+  info "→ Linking dots into ~/.local/bin"
+  mkdir -p "$HOME/.local/bin"
+  if [[ -L "$HOME/.local/bin/dot" ]]; then
+    local old_dot
+    old_dot="$(readlink "$HOME/.local/bin/dot" 2>/dev/null || true)"
+    if [[ "$old_dot" == *dotfiles* ]]; then
+      rm -f "$HOME/.local/bin/dot"
+      info "  removed legacy ~/.local/bin/dot"
+    fi
+  fi
+  ln -sfn "$DOTFILES/bin/dots" "$HOME/.local/bin/dots"
+
   # 5b. Secrets (Infisical → ~/.config/dot/secrets.{zsh,env})
   # The CLI used to be called dot; drop its units/agent before installing dots.
   if [[ "$OS" == linux ]]; then
@@ -401,19 +414,8 @@ cmd_install() {
     fi
   fi
 
-  # 12. Directories, dots on PATH, T3 sync
+  # 12. Directories, T3 sync
   mkdir -p "$HOME/.zsh/cache"
-  info "→ Linking dots into ~/.local/bin"
-  mkdir -p "$HOME/.local/bin"
-  if [[ -L "$HOME/.local/bin/dot" ]]; then
-    local old_dot
-    old_dot="$(readlink "$HOME/.local/bin/dot" 2>/dev/null || true)"
-    if [[ "$old_dot" == *dotfiles* ]]; then
-      rm -f "$HOME/.local/bin/dot"
-      info "  removed legacy ~/.local/bin/dot"
-    fi
-  fi
-  ln -sfn "$DOTFILES/bin/dots" "$HOME/.local/bin/dots"
   if [[ -d "${T3CODE_HOME:-$HOME/.t3}/userdata" ]]; then
     info "→ dots t3 push"
     cmd_t3 push || fail "dots t3 push"
@@ -674,7 +676,7 @@ t3_require() {
 }
 
 filter_settings() {
-  jq -S 'del(.projectSettingsOverrides, .projectAutoPullOverrides, .sourceControlHosts)'
+  jq -S 'del(.projectSettingsOverrides, .projectAutoPullOverrides, .sourceControlHosts) | del(.providerInstances[]?.config?.serverPassword)'
 }
 
 cmd_t3() {
