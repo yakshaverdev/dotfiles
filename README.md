@@ -20,14 +20,15 @@ cp .env.example ~/.env && $EDITOR ~/.env   # fill in real values
 
 `bootstrap` installs the minimum needed to run the CLI (Xcode CLT + Homebrew +
 `stow jq` on macOS; `stow jq git curl` via apt on Linux), then hands off to
-`dot install`.
+`dots install`.
 
 ## Layout
 
 ```
-bin/dot                 # cross-platform CLI (install / doctor / t3 / secret)
-bin/dot-secret          # env var + API key manager (Infisical)
+bin/dots                 # cross-platform CLI (install / doctor / t3 / secret)
+bin/dots-secret          # env var + API key manager (Infisical)
 bootstrap               # first-run entry point
+config/contexts         # client name → Infisical project + git remote patterns
 config/hosts            # machine → ssh target for peer secret sync
 hooks/pre-commit        # gitleaks secret scan
 packages/Brewfile       # macOS packages
@@ -50,18 +51,19 @@ Each package mirrors a path under `$HOME`:
 stow --no-folding -d "$DOTFILES/stow/<group>" -t "$HOME" <pkg>
 ```
 
-## `dot` commands
+## `dots` commands
 
 | Command | What it does |
 |---|---|
-| `dot install` | Idempotent bootstrap/refresh: packages, mise, legacy cleanup, stow, git identity, hooks, services, T3 push, `~/.local/bin/dot` symlink |
-| `dot doctor` | Read-only health check: symlinks, commands, login shell, mise tools, packages, git identity, T3 drift |
-| `dot t3 pull` | Copy live T3 Code settings into `t3/` |
-| `dot t3 push` | Apply `t3/` settings to the live T3 Code install |
-| `dot t3 diff` | Diff live vs tracked T3 settings |
-| `dot secret <cmd>` | Env vars / API keys: `set`, `get`, `ls`, `rm`, `sync`, `import`, `reload`, `doctor` |
+| `dots install` | Idempotent bootstrap/refresh: packages, mise, legacy cleanup, stow, git identity, hooks, services, T3 push, `~/.local/bin/dots` symlink |
+| `dots doctor` | Read-only health check: symlinks, commands, login shell, mise tools, packages, git identity, T3 drift, secrets contexts |
+| `dots t3 pull` | Copy live T3 Code settings into `t3/` |
+| `dots t3 push` | Apply `t3/` settings to the live T3 Code install |
+| `dots t3 diff` | Diff live vs tracked T3 settings |
+| `dots secret <cmd>` | Env vars / API keys: `set`, `get`, `ls`, `rm`, `sync`, `import`, `ctx`, `run`, `reload`, `doctor` |
+| `dots secret --ctx NAME <cmd>` | Same commands against a client context project |
 
-After the first install, `dot` is on your `PATH` via `~/.local/bin/dot`.
+After the first install, `dots` is on your `PATH` via `~/.local/bin/dots`.
 
 ## CI
 
@@ -73,7 +75,7 @@ to `master`, plus manual dispatch:
 - **secrets** — full-history `gitleaks` scan using `.gitleaks.toml`.
 - **bootstrap-linux** — runs `./bootstrap` as a fresh non-root user in an
   Ubuntu 24.04 container with `MISE_DISABLE_TOOLS=erlang,elixir,ruby`, then
-  runs `dot doctor`.
+  runs `dots doctor`.
 - **stow-macos** — simulates stowing every `common` and `darwin` package into
   a temporary `$HOME` and checks bash syntax.
 
@@ -83,7 +85,7 @@ to `master`, plus manual dispatch:
    `stow/common/foo/.config/foo/config.toml`.
 2. Pick the group: `common` (both OSes), `darwin` (macOS only), or `linux`
    (Linux only).
-3. Run `dot install` (it stows every package in `common` + the current OS), or
+3. Run `dots install` (it stows every package in `common` + the current OS), or
    stow just the new one:
 
    ```bash
@@ -107,7 +109,7 @@ or `packages/apt.txt` instead.
 
 New dependency versions are ignored for 7 days:
 
-- **npm** — `dot install` ensures `~/.npmrc` has `min-release-age=7`. The file
+- **npm** — `dots install` ensures `~/.npmrc` has `min-release-age=7`. The file
   also holds a private auth token and machine-specific prefix, so it is never
   tracked.
 - **pnpm** — the tracked `stow/common/pnpm/.config/pnpm/rc` sets
@@ -120,8 +122,8 @@ T3 Code rewrites `settings.json` and `keybindings.json` atomically under
 `${T3CODE_HOME:-$HOME/.t3}/userdata`, so they are **never** stowed — they are
 copied.
 
-- Change settings in the app → `dot t3 pull` → commit `t3/`.
-- On the other machine → `dot t3 push` → restart/reload T3 Code.
+- Change settings in the app → `dots t3 pull` → commit `t3/`.
+- On the other machine → `dots t3 push` → restart/reload T3 Code.
 
 `t3/settings.base.json` is a portable subset: project overrides, auto-pull
 overrides, and source-control hosts (tokens) are stripped on pull. Push
@@ -129,10 +131,12 @@ deep-merges the live file with the base, with `t3/` winning.
 
 ## Secrets
 
-Env vars and API keys live in one self-hosted Infisical project, `dot-env`,
-and are mirrored onto each machine by `dot secret`. `~/.env` still holds
-machine-local bootstrap values (git identity, etc.); project secrets belong
-in Infisical, never in a stowed file.
+Env vars and API keys live in a self-hosted Infisical instance and are
+mirrored onto each machine by `dots secret`. Personal secrets use the
+`dot-env` project (folders below); each client gets its own project (see
+[Client contexts](#client-contexts)). `~/.env` still holds machine-local
+bootstrap values (git identity, etc.); project secrets belong in Infisical,
+never in a stowed file.
 
 Each machine authenticates with a universal-auth identity stored in
 `~/.config/dot/infisical.env` (mode 600, never committed):
@@ -165,14 +169,16 @@ same name can be overridden per machine or per purpose.
 
 | Command | What it does |
 |---|---|
-| `dot secret set NAME` | Upsert a secret, then sync this machine and the peer |
-| `dot secret get NAME` | Print exactly one value (or `--copy`) |
-| `dot secret ls` | List names and folders, never values |
-| `dot secret rm NAME --scope S` | Delete from one folder, then sync |
-| `dot secret sync` | Refresh the local files from Infisical |
-| `dot secret import FILE` | Import dotenv lines into a folder |
-| `dot secret reload` | Make shells / T3 Code pick up new values |
-| `dot secret doctor` | Check creds, access, files and the sync job |
+| `dots secret set NAME` | Upsert a secret, then sync this machine and the peer |
+| `dots secret get NAME` | Print exactly one value (or `--copy`) |
+| `dots secret ls` | List names and folders, never values |
+| `dots secret rm NAME (--scope S \| --ctx NAME)` | Delete from one folder or client context, then sync |
+| `dots secret sync` | Refresh personal files and every context cache from Infisical |
+| `dots secret import FILE` | Import dotenv lines into a folder |
+| `dots secret ctx [DIR]` | Print the client context for a directory (or `personal`) |
+| `dots secret run -- CMD` | Run a command with the detected (or `--ctx`) context secrets |
+| `dots secret reload` | Make shells / T3 Code pick up new values |
+| `dots secret doctor` | Check creds, access, contexts, files and the sync job |
 
 Values are never taken from argv. `set` reads them with a hidden prompt, from
 the macOS clipboard (`--clip`), from a file (`--from-file`), or from stdin
@@ -180,26 +186,33 @@ the macOS clipboard (`--clip`), from a file (`--from-file`), or from stdin
 `shared`.
 
 ```bash
-dot secret set OPENAI_API_KEY --scope agents       # hidden prompt
-dot secret set GH_TOKEN --clip                     # macOS clipboard
-dot secret set SENTRY_AUTH_TOKEN --from-file ~/Downloads/token
-printf '%s' "$KEY" | dot secret set LLM_API_KEY --stdin
+dots secret set OPENAI_API_KEY --scope agents       # hidden prompt
+dots secret set GH_TOKEN --clip                     # macOS clipboard
+dots secret set SENTRY_AUTH_TOKEN --from-file ~/Downloads/token
+printf '%s' "$KEY" | dots secret set LLM_API_KEY --stdin
 
-dot secret get OPENAI_API_KEY                      # prints one value
-dot secret get OPENAI_API_KEY --copy               # pbcopy / OSC 52
+dots secret get OPENAI_API_KEY                      # prints one value
+dots secret get OPENAI_API_KEY --copy               # pbcopy / OSC 52
 
-dot secret ls
-dot secret import .env.local --scope agents
-dot secret rm OLD_KEY --scope shared
-dot secret sync
-dot secret reload
-dot secret doctor
+dots secret ls
+dots secret import .env.local --scope agents
+dots secret rm OLD_KEY --scope shared
+dots secret sync
+dots secret reload
+dots secret doctor
+
+# Client context (project at /; --scope cannot be combined with --ctx)
+dots secret --ctx shovel set CLIENT_API_KEY --stdin
+dots secret --ctx shovel get CLIENT_API_KEY
+dots secret --ctx shovel ls
+dots secret ctx ~/code/shovel-monorepo
+dots secret run -- npm test
 ```
 
 `set`, `rm` and `import` also sync the other machine over
 `ssh` (`config/hosts`); `--no-peer` skips that. A failed peer sync is only a
 warning — the peer catches up on its next scheduled sync. `--reload` runs
-`dot secret reload` afterwards.
+`dots secret reload` afterwards.
 
 ### Where values land
 
@@ -207,17 +220,78 @@ warning — the peer catches up on its next scheduled sync. `--reload` runs
   `~/.zshrc` right after `~/.env`. New shells and agent tool commands see
   these immediately.
 - `~/.config/dot/secrets.env` — systemd `EnvironmentFile` format, loaded by
-  `t3code.service` through the `50-dot-secrets.conf` drop-in. Restart the unit
+  `t3code.service` through the `50-dots-secrets.conf` drop-in. Restart the unit
   to apply.
+- `~/.config/dot/secrets.names` — the personal secret names, used to unset
+  personal variables inside `strict` client contexts.
+- `~/.config/dot/ctx/<name>.zsh` and `ctx/<name>.names` — one cache per client
+  context. Client values never enter `secrets.zsh` or `secrets.env`.
 - macOS: T3 Code reads the login shell environment, so it picks up new values
-  after the app is restarted (`dot secret reload --force`).
-- Both files are mode 600 and written atomically. `~/.config/dot/secrets.synced`
-  records the timestamp and count of the last sync.
+  after the app is restarted (`dots secret reload --force`).
+- These files are mode 600 and written atomically. `~/.config/dot/secrets.synced`
+  records the timestamp and count of the last personal sync.
 
-`dot secret sync` runs after `dot install`, on demand, and in the background
-every 15 minutes (systemd `dot-secret-sync.timer` on Linux, a launchd agent on
+`dots secret sync` runs after `dots install`, on demand, and in the background
+every 15 minutes (systemd `dots-secret-sync.timer` on Linux, a launchd agent on
 macOS). If Infisical is unreachable the previous files are kept, so shells and
 T3 keep working; on a machine that has never synced, `sync` exits 1.
+
+### Client contexts
+
+Client keys must never mix with personal keys. Each client owns a separate
+Infisical project, with secrets at path `/` in env `prod` and no folders. The
+machine identities (`dot-macbook`, `dot-vps`) are members of those projects.
+
+`config/contexts` maps a repo's git origin to a context:
+
+```
+# name   infisical-project-id                   mode    git remote patterns
+shovel   05f7ffd8-7780-4718-a48a-ebbe1a85fc6a   strict  *github.com[:/]shovelers/*
+skit     0487e2ec-049a-42f8-9706-ce853f4ed478   strict  *gitlab.com[:/]skit-ai/* *github.com[:/]skit-ai/*
+```
+
+- `strict` — inside the context, every personal name is unset before the
+  client values are applied.
+- `merge` — personal names stay; context values override on collision.
+
+`--ctx NAME` targets a client project for `set`, `get`, `ls`, `rm` and
+`import`. It may appear before or after the subcommand, and cannot be combined
+with `--scope`.
+
+```bash
+dots secret --ctx shovel set CLIENT_API_KEY --stdin
+dots secret --ctx shovel get CLIENT_API_KEY
+dots secret --ctx shovel ls
+dots secret --ctx shovel import .env.client
+dots secret --ctx shovel rm OLD_CLIENT_KEY
+```
+
+`dots secret ctx DIR` resolves `git -C DIR rev-parse --show-toplevel`, reads
+`remote.origin.url` there and prints the matching context, or `personal`.
+Matches are checked in `config/contexts` order.
+
+`dots secret run [--ctx NAME] -- CMD…` detects the context from `$PWD`, builds
+the environment (strict contexts unset `secrets.names`), sources
+`ctx/<name>.zsh`, exports `DOT_CTX`, and execs `CMD`. If the cache is missing
+it runs `dots secret sync --quiet` first. `personal` just execs.
+
+The zsh hook in `~/.config/zsh/contexts.zsh` does the same on every `chpwd`
+(pure zsh + git, cached per repo): it unsets the old context's names, restores
+personal secrets after a strict context, applies the new context, and sets
+`DOT_CTX`. Starship shows `⎔ <context>` while a client context is active.
+This runs in agent shells too, so agents inherit the right client keys.
+
+`dots secret sync` refreshes every context cache. A failing client project
+warns and keeps that context's previous files, so one broken client does not
+affect personal secrets or the other clients. `dots secret doctor` reports
+each context's reachability and cache age.
+
+To add a client:
+
+1. Create an Infisical project and add its secrets at `/` in `prod`.
+2. Give the `dot-macbook` and `dot-vps` identities member access.
+3. Add a line to `config/contexts` with the project ID, mode and origin glob.
+4. Run `dots secret sync` (or `dots install` on both machines).
 
 ### T3 agent flow
 
@@ -225,7 +299,7 @@ When an agent needs a key, it asks for it through T3's secret card with file
 delivery. The value arrives as a file, and the agent runs:
 
 ```bash
-dot secret set NAME --from-file /path/to/delivered-file --scope agents
+dots secret set NAME --from-file /path/to/delivered-file --scope agents
 ```
 
 The value never enters the agent's command line or transcript; it is stored in
@@ -241,11 +315,13 @@ credential for one specific target instead of the raw value.
 
 ### Re-provisioning a machine identity
 
-Create a universal-auth identity in Infisical with read access to `dot-env`,
-then write the file above (mode 600) with the new `clientId` /
-`clientSecret` and the matching `DOT_MACHINE`. Run `dot secret sync` (or
-`dot install`) and `dot secret doctor`. To rotate the identity, replace the
-two `INFISICAL_UA_*` values and delete `~/.config/dot/.token`.
+Create a universal-auth identity in Infisical with read access to `dot-env`
+and every client project, then write the file above (mode 600) with the new
+`clientId` / `clientSecret` and the matching `DOT_MACHINE`. Run
+`dots secret sync` (or `dots install`) and `dots secret doctor`. To rotate the
+identity, replace the two `INFISICAL_UA_*` values, delete
+`~/.config/dot/.token`, and grant the new identity member access to the client
+projects.
 
 ## Agent shells
 
@@ -257,11 +333,11 @@ agent wrappers. Agents get plain tools and the real CLIs.
 
 Machine-local, untracked shell config goes in `~/.config/zsh/local.zsh`.
 
-Git identity is **not** in the repo. `dot install` writes
+Git identity is **not** in the repo. `dots install` writes
 `~/.config/git/identity` from `GIT_USER_NAME` / `GIT_USER_EMAIL`, which
 `~/.config/git/config` includes. `GIT_USER_NAME` must be a full name
 (e.g. `Ada Lovelace`), never an email address. Identity is global only;
-`dot install` removes any repo-local `user.name`/`user.email` override.
+`dots install` removes any repo-local `user.name`/`user.email` override.
 
 ## Remote hosts
 
@@ -279,6 +355,16 @@ cannot import shell variables — see
 [`themes/tokyo-night-storm/THEME.md`](themes/tokyo-night-storm/THEME.md).
 Wallpapers are generated from the palette with `wallpapers/generate.sh`.
 
+## AeroSpace (macOS)
+
+Six workspaces. Zen opens on 1, T3 Code on 2, Bitwarden on 3; 4–6 are free.
+`alt-1..6` switches, `alt-shift-1..6` moves the window, `alt-h/j/k/l` focuses,
+`alt-shift-h/j/k/l` moves, `alt-f` fullscreen, `alt-tab` previous workspace.
+The full key list is at the top of `stow/darwin/wm/.config/aerospace/aerospace.toml`.
+`scripts/macos-defaults.sh` turns off the macOS features that fight a tiling
+window manager (Stage Manager, edge tiling, click-wallpaper-to-show-desktop,
+per-display Spaces) and groups windows by app in Mission Control.
+
 ## tmux keybinds
 
 - `Alt+K` — fzf session switcher (popup)
@@ -288,7 +374,7 @@ Wallpapers are generated from the palette with `wallpapers/generate.sh`.
 
 ## Manual steps
 
-After `dot install`:
+After `dots install`:
 
 - **macOS**: grant Accessibility permission to AeroSpace; log out and back in
   for the full set of `defaults` changes; keep one native Space per display.

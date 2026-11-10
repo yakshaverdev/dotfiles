@@ -19,7 +19,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y zsh shellcheck
       - name: ShellCheck
         run: >-
-          shellcheck -x bin/dot bin/dot-secret bootstrap hooks/pre-commit scripts/*.sh
+          shellcheck -x bin/dots bin/dots-secret bootstrap hooks/pre-commit scripts/*.sh
           stow/common/tmux/.config/tmux/*.sh
       - name: zsh syntax
         run: |
@@ -81,7 +81,7 @@ jobs:
           su - ci -c "cd ~/code/personal/dotfiles && GITHUB_TOKEN='${GITHUB_TOKEN}' MISE_DISABLE_TOOLS='erlang,elixir,ruby' ./bootstrap"
       - name: Doctor
         run: |
-          su - ci -c 'export MISE_DISABLE_TOOLS=erlang,elixir,ruby PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"; /home/ci/.local/bin/dot doctor'
+          su - ci -c 'export MISE_DISABLE_TOOLS=erlang,elixir,ruby PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"; /home/ci/.local/bin/dots doctor'
 
   stow-macos:
     runs-on: macos-latest
@@ -100,4 +100,4 @@ jobs:
             done
           done
       - name: bash syntax
-        run: bash -n bin/dot bin/dot-secret bootstrap
+        run: bash -n bin/dots bin/dots-secret bootstrap

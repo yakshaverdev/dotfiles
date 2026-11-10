@@ -14,6 +14,21 @@ defaults write com.apple.dock minimize-to-application -bool true
 
 # ===== Mission Control =====
 defaults write com.apple.dock expose-animation-duration -float 0.1
+# AeroSpace hides windows off-screen; grouping keeps Mission Control readable.
+defaults write com.apple.dock expose-group-apps -bool true
+
+# ===== Window management: let AeroSpace own it =====
+# One Space spans all displays (AeroSpace recommendation; needs logout).
+defaults write com.apple.spaces spans-displays -bool true
+# Stage Manager off.
+defaults write com.apple.WindowManager GloballyEnabled -bool false
+# macOS window tiling off (drag to edges/top, option-drag, margins).
+defaults write com.apple.WindowManager EnableTilingByEdgeDrag -bool false
+defaults write com.apple.WindowManager EnableTopTilingByEdgeDrag -bool false
+defaults write com.apple.WindowManager EnableTilingOptionAccelerator -bool false
+defaults write com.apple.WindowManager EnableTiledWindowMargins -bool false
+# Clicking the wallpaper does not hide all windows.
+defaults write com.apple.WindowManager EnableStandardClickToShowDesktop -bool false
 
 # ===== Finder =====
 defaults write com.apple.finder AppleShowAllFiles -bool true

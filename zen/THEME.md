@@ -24,7 +24,7 @@ Manual sync:
 bash zen/link-profile.sh
 ```
 
-`dot install` runs this automatically when a Zen profile exists.
+`dots install` runs this automatically when a Zen profile exists.
 
 ## Next Steps
 

@@ -10,6 +10,7 @@ command_timeout = 1000
 # Prompt format — minimal, two-line. Line 1: context. Line 2: prompt char.
 format = """
 $directory\
+$env_var\
 $git_branch\
 $git_status\
 $nodejs\
@@ -20,6 +21,10 @@ $aws\
 $cmd_duration\
 $line_break\
 $character"""
+
+[env_var.DOT_CTX]
+format = " [⎔ $env_value]($style)"
+style = "bold yellow"
 
 [character]
 success_symbol = "[❯](bold green)"

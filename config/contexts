@@ -1,0 +1,5 @@
+# Client contexts: each has its own Infisical project at path / in env prod.
+# A repo whose origin matches a pattern below gets that context.
+#   name   infisical-project-id                   mode    git remote patterns (shell globs, matched against `git remote get-url origin`)
+shovel   05f7ffd8-7780-4718-a48a-ebbe1a85fc6a   strict  *github.com[:/]shovelers/*
+skit     0487e2ec-049a-42f8-9706-ce853f4ed478   strict  *gitlab.com[:/]skit-ai/* *github.com[:/]skit-ai/*

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dot — cross-platform dotfiles bootstrap / maintenance CLI.
+# dots — cross-platform dotfiles bootstrap / maintenance CLI.
 #
 # Works on macOS (darwin) and Ubuntu/Debian (linux). GNU Stow is used to
 # symlink packages from stow/<group>/<pkg> into $HOME.
@@ -119,7 +119,7 @@ find_legacy_links() {
 
 # ── install ────────────────────────────────────────────────────────────────
 cmd_install() {
-  info "=== dot install (${OS}) ==="
+  info "=== dots install (${OS}) ==="
 
   # 1. ~/.env
   if [[ ! -f "$HOME/.env" ]]; then
@@ -246,24 +246,37 @@ cmd_install() {
   done
 
   # 5b. Secrets (Infisical → ~/.config/dot/secrets.{zsh,env})
+  # The CLI used to be called dot; drop its units/agent before installing dots.
+  if [[ "$OS" == linux ]]; then
+    if systemctl --user show-environment >/dev/null 2>&1; then
+      systemctl --user disable --now dot-secret-sync.timer >/dev/null 2>&1 || true
+      rm -f "$HOME/.config/systemd/user/dot-secret-sync.timer" \
+            "$HOME/.config/systemd/user/dot-secret-sync.service"
+      systemctl --user daemon-reload >/dev/null 2>&1 || true
+    fi
+  else
+    launchctl bootout "gui/$(id -u)/com.dot.secret-sync" 2>/dev/null || true
+    rm -f "$HOME/Library/LaunchAgents/com.dot.secret-sync.plist"
+  fi
+
   if [[ -f "$HOME/.config/dot/infisical.env" ]]; then
-    info "→ dot secret sync"
-    if ! "$DOTFILES/bin/dot-secret" sync 2>&1 | sed 's/^/  /'; then
-      fail "dot secret sync"
+    info "→ dots secret sync"
+    if ! "$DOTFILES/bin/dots-secret" sync 2>&1 | sed 's/^/  /'; then
+      fail "dots secret sync"
     fi
     if [[ "$OS" == linux ]]; then
       if systemctl --user show-environment >/dev/null 2>&1; then
         systemctl --user daemon-reload || fail "systemctl --user daemon-reload"
-        systemctl --user enable --now dot-secret-sync.timer \
-          || fail "enable dot-secret-sync.timer"
+        systemctl --user enable --now dots-secret-sync.timer \
+          || fail "enable dots-secret-sync.timer"
       else
-        warn "systemd --user not available — skipping dot-secret-sync.timer"
+        warn "systemd --user not available — skipping dots-secret-sync.timer"
       fi
     else
-      launchctl bootout "gui/$(id -u)/com.dot.secret-sync" 2>/dev/null || true
+      launchctl bootout "gui/$(id -u)/com.dots.secret-sync" 2>/dev/null || true
       launchctl bootstrap "gui/$(id -u)" \
-        "$HOME/Library/LaunchAgents/com.dot.secret-sync.plist" \
-        || fail "launchctl bootstrap com.dot.secret-sync"
+        "$HOME/Library/LaunchAgents/com.dots.secret-sync.plist" \
+        || fail "launchctl bootstrap com.dots.secret-sync"
     fi
   else
     MANUAL+=("Infisical identity missing: create ~/.config/dot/infisical.env (see README › Secrets)")
@@ -284,13 +297,13 @@ cmd_install() {
     info "  ~/.config/git/identity already exists — leaving it alone"
   elif [[ -z "$GIT_USER_NAME" ]]; then
     err "GIT_USER_NAME is empty in ~/.env — skipping git identity"
-    MANUAL+=("Set GIT_USER_NAME/GIT_USER_EMAIL in ~/.env and re-run dot install")
+    MANUAL+=("Set GIT_USER_NAME/GIT_USER_EMAIL in ~/.env and re-run dots install")
   elif [[ "$GIT_USER_NAME" == *"@"* || "$GIT_USER_NAME" == "user.email" ]]; then
     err "GIT_USER_NAME looks wrong (\"$GIT_USER_NAME\") — must be a full name, not an email — skipping git identity"
     MANUAL+=("Fix GIT_USER_NAME in ~/.env (full name, e.g. \"Ada Lovelace\")")
   elif [[ -z "$GIT_USER_EMAIL" ]]; then
     err "GIT_USER_EMAIL is empty in ~/.env — skipping git identity"
-    MANUAL+=("Set GIT_USER_EMAIL in ~/.env and re-run dot install")
+    MANUAL+=("Set GIT_USER_EMAIL in ~/.env and re-run dots install")
   else
     mkdir -p "$(dirname "$identity")"
     {
@@ -388,14 +401,22 @@ cmd_install() {
     fi
   fi
 
-  # 12. Directories, dot on PATH, T3 sync
+  # 12. Directories, dots on PATH, T3 sync
   mkdir -p "$HOME/.zsh/cache"
-  info "→ Linking dot into ~/.local/bin"
+  info "→ Linking dots into ~/.local/bin"
   mkdir -p "$HOME/.local/bin"
-  ln -sfn "$DOTFILES/bin/dot" "$HOME/.local/bin/dot"
+  if [[ -L "$HOME/.local/bin/dot" ]]; then
+    local old_dot
+    old_dot="$(readlink "$HOME/.local/bin/dot" 2>/dev/null || true)"
+    if [[ "$old_dot" == *dotfiles* ]]; then
+      rm -f "$HOME/.local/bin/dot"
+      info "  removed legacy ~/.local/bin/dot"
+    fi
+  fi
+  ln -sfn "$DOTFILES/bin/dots" "$HOME/.local/bin/dots"
   if [[ -d "${T3CODE_HOME:-$HOME/.t3}/userdata" ]]; then
-    info "→ dot t3 push"
-    cmd_t3 push || fail "dot t3 push"
+    info "→ dots t3 push"
+    cmd_t3 push || fail "dots t3 push"
   fi
 
   # 13. GitHub auth (never prompt)
@@ -405,7 +426,7 @@ cmd_install() {
 
   # 14. Summary
   info ""
-  info "=== dot install complete ==="
+  info "=== dots install complete ==="
   if ((${#FAILURES[@]})); then
     info ""
     info "Failures:"
@@ -435,7 +456,7 @@ cmd_doctor() {
   bad()  { printf '  ✗ %s\n' "$*"; problems=$((problems + 1)); }
   note() { printf '  ! %s\n' "$*"; warnings=$((warnings + 1)); }
 
-  info "=== dot doctor (${OS}) ==="
+  info "=== dots doctor (${OS}) ==="
 
   # Symlinks for every stowed file
   info "→ Stowed file symlinks"
@@ -579,7 +600,7 @@ cmd_doctor() {
   if [[ -f "$HOME/.npmrc" ]] && grep -qE '^[[:space:]]*min-release-age[[:space:]]*=' "$HOME/.npmrc"; then
     ok "$HOME/.npmrc has min-release-age"
   else
-    bad "$HOME/.npmrc missing min-release-age (run: dot install)"
+    bad "$HOME/.npmrc missing min-release-age (run: dots install)"
   fi
 
   # Git identity
@@ -604,7 +625,7 @@ cmd_doctor() {
     if cmd_t3 diff >/dev/null 2>&1; then
       ok "settings/keybindings in sync"
     else
-      bad "T3 settings differ (run: dot t3 pull)"
+      bad "T3 settings differ (run: dots t3 pull)"
     fi
   else
     ok "T3 Code not installed here"
@@ -613,10 +634,10 @@ cmd_doctor() {
   # Secrets
   info "→ Secrets"
   if [[ -f "$HOME/.config/dot/infisical.env" ]]; then
-    if "$DOTFILES/bin/dot-secret" doctor >/dev/null 2>&1; then
-      ok "dot secret doctor"
+    if "$DOTFILES/bin/dots-secret" doctor >/dev/null 2>&1; then
+      ok "dots secret doctor"
     else
-      bad "dot secret doctor reported problems (run: dot secret doctor)"
+      bad "dots secret doctor reported problems (run: dots secret doctor)"
     fi
   else
     note "Infisical identity missing (create ~/.config/dot/infisical.env)"
@@ -672,7 +693,7 @@ cmd_t3() {
     push)
       if ! t3_require; then return 0; fi
       if [[ ! -f "$repo/keybindings.json" || ! -f "$repo/settings.base.json" ]]; then
-        err "No tracked T3 settings in $repo (run: dot t3 pull on the other machine and commit)"
+        err "No tracked T3 settings in $repo (run: dots t3 pull on the other machine and commit)"
         return 1
       fi
       local ts
@@ -704,7 +725,7 @@ cmd_t3() {
       return "$rc"
       ;;
     *)
-      err "usage: dot t3 pull|push|diff"
+      err "usage: dots t3 pull|push|diff"
       return 1
       ;;
   esac
@@ -713,7 +734,7 @@ cmd_t3() {
 # ── main ───────────────────────────────────────────────────────────────────
 usage() {
   cat <<EOF
-Usage: dot <command>
+Usage: dots <command>
 
 Commands:
   install   Bootstrap/refresh this machine (stow, packages, mise, git, T3)
@@ -730,7 +751,7 @@ case "${1:-}" in
   install) cmd_install ;;
   doctor)  cmd_doctor ;;
   t3)      shift; cmd_t3 "${1:-}" ;;
-  secret)  shift; exec "$DOTFILES/bin/dot-secret" "$@" ;;
+  secret)  shift; exec "$DOTFILES/bin/dots-secret" "$@" ;;
   -h|--help|help|"") usage ;;
   *) err "unknown command: $1"; usage; exit 1 ;;
 esac

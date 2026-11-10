@@ -52,5 +52,5 @@ else
   fi
 fi
 
-echo "→ Running dot install..."
-exec "$DOTFILES/bin/dot" install "$@"
+echo "→ Running dots install..."
+exec "$DOTFILES/bin/dots" install "$@"
