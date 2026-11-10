@@ -245,6 +245,30 @@ cmd_install() {
     done
   done
 
+  # 5b. Secrets (Infisical → ~/.config/dot/secrets.{zsh,env})
+  if [[ -f "$HOME/.config/dot/infisical.env" ]]; then
+    info "→ dot secret sync"
+    if ! "$DOTFILES/bin/dot-secret" sync 2>&1 | sed 's/^/  /'; then
+      fail "dot secret sync"
+    fi
+    if [[ "$OS" == linux ]]; then
+      if systemctl --user show-environment >/dev/null 2>&1; then
+        systemctl --user daemon-reload || fail "systemctl --user daemon-reload"
+        systemctl --user enable --now dot-secret-sync.timer \
+          || fail "enable dot-secret-sync.timer"
+      else
+        warn "systemd --user not available — skipping dot-secret-sync.timer"
+      fi
+    else
+      launchctl bootout "gui/$(id -u)/com.dot.secret-sync" 2>/dev/null || true
+      launchctl bootstrap "gui/$(id -u)" \
+        "$HOME/Library/LaunchAgents/com.dot.secret-sync.plist" \
+        || fail "launchctl bootstrap com.dot.secret-sync"
+    fi
+  else
+    MANUAL+=("Infisical identity missing: create ~/.config/dot/infisical.env (see README › Secrets)")
+  fi
+
   # 6. Supply-chain cooldown (npm)
   info "→ Ensuring npm release cooldown (~/.npmrc)..."
   if ensure_npm_cooldown; then
@@ -586,6 +610,18 @@ cmd_doctor() {
     ok "T3 Code not installed here"
   fi
 
+  # Secrets
+  info "→ Secrets"
+  if [[ -f "$HOME/.config/dot/infisical.env" ]]; then
+    if "$DOTFILES/bin/dot-secret" doctor >/dev/null 2>&1; then
+      ok "dot secret doctor"
+    else
+      bad "dot secret doctor reported problems (run: dot secret doctor)"
+    fi
+  else
+    note "Infisical identity missing (create ~/.config/dot/infisical.env)"
+  fi
+
   # Repo cleanliness (warning only)
   info "→ Repo"
   if [[ -n "$(git -C "$DOTFILES" status --porcelain 2>/dev/null || true)" ]]; then
@@ -685,6 +721,8 @@ Commands:
   t3 pull   Copy live T3 Code settings into the repo
   t3 push   Apply repo T3 Code settings to the live app
   t3 diff   Show differences between live and tracked T3 settings
+  secret    Manage env vars / API keys (set, get, ls, rm, sync, import,
+            reload, doctor)
 EOF
 }
 
@@ -692,6 +730,7 @@ case "${1:-}" in
   install) cmd_install ;;
   doctor)  cmd_doctor ;;
   t3)      shift; cmd_t3 "${1:-}" ;;
+  secret)  shift; exec "$DOTFILES/bin/dot-secret" "$@" ;;
   -h|--help|help|"") usage ;;
   *) err "unknown command: $1"; usage; exit 1 ;;
 esac

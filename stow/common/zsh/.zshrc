@@ -1,5 +1,6 @@
 # ─── Source machine-specific secrets ──────────────────────────────
 [[ -f "$HOME/.env" ]] && source "$HOME/.env"
+[[ -r "$HOME/.config/dot/secrets.zsh" ]] && source "$HOME/.config/dot/secrets.zsh"
 
 # ─── Resolve the repo root from this file's symlink ───────────────
 # ~/.zshrc is stowed from <repo>/stow/common/zsh/.zshrc, so :A resolves

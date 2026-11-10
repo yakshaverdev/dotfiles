@@ -1,0 +1,3 @@
+# machine  ssh-target                    repo-path
+macbook    akshaydeshraj@macbook-work    ~/Code/personal/dotfiles
+vps        ubuntu@terminator-silver      ~/code/personal/dotfiles
