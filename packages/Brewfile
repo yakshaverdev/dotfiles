@@ -232,3 +232,7 @@ mas "Xcode", id: 497799835
 uv "mojo"
 uv "omnigent"
 uv "vmlx"
+# mise installs these on Linux; its aqua packages do not support macOS
+brew "btop"
+brew "dust"
+brew "eza"
