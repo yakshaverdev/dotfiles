@@ -11,7 +11,7 @@ lockfile = true
 # ─── Runtimes ───────────────────────────────────────────────────
 node = "22"
 ruby = "3"
-erlang = "28"
+erlang = "28.5.0.6"
 elixir = "1.19.5-otp-28"
 go = "latest"
 python = "3.13"

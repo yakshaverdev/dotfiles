@@ -2,6 +2,16 @@
 # Secret scan for staged changes. Uses gitleaks; bypass with SKIP_GITLEAKS=1.
 set -uo pipefail
 
+# Non-interactive shells (git GUIs, agents) often lack mise on PATH.
+if ! command -v gitleaks >/dev/null 2>&1; then
+  for m in mise "$HOME/.local/bin/mise" /opt/homebrew/bin/mise; do
+    if command -v "$m" >/dev/null 2>&1 && gl="$("$m" which gitleaks 2>/dev/null)"; then
+      PATH="$(dirname "$gl"):$PATH"
+      break
+    fi
+  done
+fi
+
 if ! command -v gitleaks >/dev/null 2>&1; then
   echo "gitleaks not found — install with \`mise install\`; set SKIP_GITLEAKS=1 to bypass" >&2
   if [[ "${SKIP_GITLEAKS:-0}" == "1" ]]; then

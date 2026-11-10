@@ -133,26 +133,26 @@ checksum = "sha256:ca481510feb6dabc875bba43e44b25c7abafa53bd7a103639851b7aeace8a
 url = "https://builds.hex.pm/builds/elixir/v1.19.5-otp-28.zip"
 
 [[tools.erlang]]
-version = "28.5"
+version = "28.5.0.6"
 backend = "core:erlang"
-specifiers = ["28"]
-
-[tools.erlang."platforms.macos-arm64"]
-checksum = "sha256:f365335cf6c705b52557f4d3a4c4058e2e689a0e58d822160688d0cc8a736b92"
-url = "https://github.com/erlef/otp_builds/releases/download/OTP-28.5/otp-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/erlef/otp_builds/releases/assets/403427927"
-
-[[tools.erlang]]
-version = "28.5"
-backend = "core:erlang"
-specifiers = ["28"]
+specifiers = ["28.5.0.6"]
 
 [tools.erlang.options]
 precompiled_os = "ubuntu-24.04"
 
 [tools.erlang."platforms.linux-x64"]
-checksum = "sha256:dc8038a4a8e7a1107e0c959eaeef421d8960f7a70a19d045cac3e04f67d41a81"
-url = "https://builds.hex.pm/builds/otp/amd64/ubuntu-24.04/OTP-28.5.tar.gz"
+checksum = "sha256:e078a1fceb4e0b4f3e0bfd86b839a645313196869deac7f6d3fdaa31eec2193b"
+url = "https://builds.hex.pm/builds/otp/amd64/ubuntu-24.04/OTP-28.5.0.6.tar.gz"
+
+[[tools.erlang]]
+version = "28.5.0.6"
+backend = "core:erlang"
+specifiers = ["28.5.0.6"]
+
+[tools.erlang."platforms.macos-arm64"]
+checksum = "sha256:afe864ba288c842e650bef9a8a00247a1738e330791de45202c138deba98836c"
+url = "https://github.com/erlef/otp_builds/releases/download/OTP-28.5.0.6/otp-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/erlef/otp_builds/releases/assets/539543690"
 
 [[tools.eza]]
 version = "0.23.5"
@@ -343,6 +343,7 @@ specifiers = ["latest"]
 version = "2.47.0"
 backend = "pipx:git-filter-repo"
 specifiers = ["latest"]
+uv = { path = "locks/pipx-git-filter-repo/2.47.0", digest = "sha256:1a031128396be6dae7d7e6871e0e579e723ac51d3011663e754db7661fee85c0" }
 
 [[tools.python]]
 version = "3.13.18"

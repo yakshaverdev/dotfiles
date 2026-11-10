@@ -562,7 +562,7 @@ cmd_doctor() {
   info "→ Git identity"
   if [[ -f "$HOME/.config/git/identity" ]]; then
     local uname_val
-    uname_val="$(git config --global user.name 2>/dev/null || true)"
+    uname_val="$(git config --global --includes user.name 2>/dev/null || true)"
     if [[ -z "$uname_val" ]]; then
       bad "git user.name is unset"
     elif [[ "$uname_val" == *"@"* ]]; then
