@@ -33,11 +33,17 @@ chmod +x install.sh
 | `mise` | `.config/mise/config.toml` | Runtime manager (Node LTS, Ruby 3) |
 | `btop` | `.config/btop/btop.conf` | System monitor |
 | `gh` | `.config/gh/config.yml` | GitHub CLI |
-| `claude` | `.claude/CLAUDE.md`, `.claude/RTK.md` | Claude Code instructions |
+| `claude` | `.claude/CLAUDE.md`, `.claude/pstack-models.md`, `.claude/agents/oc-worker.md` | Global Claude Code instructions, pstack model overrides, and the `oc-worker` agent |
 | `doom` | `.config/doom/` | Doom Emacs config (Tokyo Night Storm) |
 | `atuin` | `.config/atuin/themes/` | Atuin shell history theme |
 | `bat` | `.config/bat/themes/` | bat syntax theme (Tokyo Night Storm tmTheme) |
 | `zen` | `chrome/userChrome.css`, `chrome/userContent.css` | Zen browser Tokyo Night Storm theme (linked into profiles via `zen/link-profile.sh`, not stowed) |
+
+`claude` is the only package meant to be stowed on Linux machines too. There, stow it on its own and do not run `install.sh`:
+
+```bash
+stow --no-folding -t ~ claude
+```
 
 ## Theme
 
