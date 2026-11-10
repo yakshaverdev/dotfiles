@@ -13,8 +13,10 @@
 # ─── Dedupe key arrays (must come before any appends) ─────────────
 # Auto-reload below re-sources ~/.zshrc, so anything mutated additively
 # (path/fpath/precmd_functions) would accumulate without these.
-typeset -U path fpath
-typeset -aU precmd_functions
+# -g matters: _check_zshrc_reload re-sources this file from inside a
+# function, where a plain `typeset` would create empty locals and wipe PATH.
+typeset -gU path fpath
+typeset -gaU precmd_functions
 
 # ─── Auto-reload zshrc when modified ──────────────────────────────
 # zsh/stat's zstat is portable (BSD stat -f is not); watch the resolved

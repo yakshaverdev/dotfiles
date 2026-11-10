@@ -22,7 +22,7 @@ path=(
 
 # ─── grok installer ──────────────────────────────────────────────
 # Completions fpath is registered in common.zsh before compinit.
-export PATH="$HOME/.grok/bin:$PATH"
+path=("$HOME/.grok/bin" $path)
 
 # ─── bun completions ─────────────────────────────────────────────
 [[ -s "$HOME/.bun/_bun" ]] && source "$HOME/.bun/_bun"
