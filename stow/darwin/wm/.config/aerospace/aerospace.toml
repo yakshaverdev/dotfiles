@@ -7,8 +7,8 @@ start-at-login = true
 auto-reload-config = true
 
 after-startup-command = [
-  'layout --workspace 1 accordion',
-  'layout --workspace 2 accordion',
+  'layout --workspace 1 --root accordion',
+  'layout --workspace 2 --root accordion',
   'exec-and-forget sketchybar',
   'exec-and-forget sketchybar --reload',
 ]

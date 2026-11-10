@@ -15,7 +15,6 @@
 #   - btop/.config/btop/themes/tokyo-night-storm.theme
 #   - wm/.config/sketchybar/sketchybarrc + plugins
 #   - wm/.config/borders/bordersrc
-#   - wm/.yabairc
 #   - zed/.config/zed/settings.json (theme name only)
 #   - nvim/.config/nvim/init.lua (colorscheme name only — folke/tokyonight.nvim)
 #
