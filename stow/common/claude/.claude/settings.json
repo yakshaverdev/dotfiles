@@ -4,10 +4,19 @@
   "autoUpdatesChannel": "stable",
   "theme": "dark-ansi",
   "enabledPlugins": {
+    "avoid-ai-writing@conorbronsdon-skills": true,
+    "clangd-lsp@claude-plugins-official": true,
+    "cloudflare@cloudflare": true,
+    "codex@openai-codex": true,
+    "humanizer@humanizer": true,
+    "mattpocock-skills@claude-plugins-official": true,
+    "plannotator@plannotator": true,
+    "ponytail@ponytail": true,
+    "pstack@pstack-claude": true,
     "pyright-lsp@claude-plugins-official": true,
     "rust-analyzer-lsp@claude-plugins-official": true,
-    "clangd-lsp@claude-plugins-official": true,
-    "codex@openai-codex": true
+    "stripe@claude-plugins-official": true,
+    "typesafe@typesafe-ai": true
   },
   "extraKnownMarketplaces": {
     "openai-codex": {
@@ -15,6 +24,61 @@
         "source": "github",
         "repo": "openai/codex-plugin-cc"
       }
+    },
+    "humanizer": {
+      "source": {
+        "source": "github",
+        "repo": "blader/humanizer"
+      }
+    },
+    "ponytail": {
+      "source": {
+        "source": "github",
+        "repo": "DietrichGebert/ponytail"
+      }
+    },
+    "plannotator": {
+      "source": {
+        "source": "github",
+        "repo": "backnotprop/plannotator"
+      }
+    },
+    "typesafe-ai": {
+      "source": {
+        "source": "github",
+        "repo": "typesafe-ai/skills"
+      }
+    },
+    "pstack-claude": {
+      "source": {
+        "source": "github",
+        "repo": "michael-denyer/pstack-claude"
+      }
+    },
+    "cloudflare": {
+      "source": {
+        "source": "github",
+        "repo": "cloudflare/skills"
+      }
+    },
+    "conorbronsdon-skills": {
+      "source": {
+        "source": "github",
+        "repo": "conorbronsdon/avoid-ai-writing"
+      }
     }
-  }
+  },
+  "agentPushNotifEnabled": true,
+  "autoCompactWindow": 300000,
+  "effortLevel": "medium",
+  "model": "opus",
+  "modelSettings": {
+    "claude-opus-5-5": {
+      "effortLevel": "medium"
+    },
+    "claude-fable-5-1": {
+      "effortLevel": "medium"
+    }
+  },
+  "tui": "fullscreen"
 }
