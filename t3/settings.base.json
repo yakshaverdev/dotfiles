@@ -27,7 +27,10 @@
   "promptSuggestionsEnabled": true,
   "providerInstances": {
     "claudeAgent": {
-      "driver": "claudeAgent"
+      "driver": "claudeAgent",
+      "config": {
+        "binaryPath": "~/.local/bin/claude-ctx"
+      }
     },
     "grok": {
       "config": {

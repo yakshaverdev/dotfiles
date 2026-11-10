@@ -257,6 +257,7 @@ cmd_install() {
     fi
   fi
   ln -sfn "$DOTFILES/bin/dots" "$HOME/.local/bin/dots"
+  ln -sfn "$DOTFILES/bin/claude-ctx" "$HOME/.local/bin/claude-ctx"
 
   # 5b. Secrets (Infisical → ~/.config/dot/secrets.{zsh,env})
   # The CLI used to be called dot; drop its units/agent before installing dots.

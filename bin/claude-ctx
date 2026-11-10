@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# T3 Code starts Claude Code through this file (claudeAgent binaryPath).
+# Claude starts MCP servers directly, without a shell, so BASH_ENV and
+# ~/.zshenv never run for them. Apply the client context for the thread's
+# working directory here, so Claude and every MCP server it starts inherit it.
+[[ -r "$HOME/.config/zsh/contexts.bash" ]] && source "$HOME/.config/zsh/contexts.bash"
+exec claude "$@"

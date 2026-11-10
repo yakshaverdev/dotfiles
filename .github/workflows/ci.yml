@@ -19,7 +19,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y zsh shellcheck
       - name: ShellCheck
         run: >-
-          shellcheck -x bin/dots bin/dots-secret bootstrap hooks/pre-commit scripts/*.sh
+          shellcheck -x bin/dots bin/dots-secret bin/claude-ctx bootstrap hooks/pre-commit scripts/*.sh
           stow/common/tmux/.config/tmux/*.sh
       - name: zsh syntax
         run: |
@@ -100,4 +100,4 @@ jobs:
             done
           done
       - name: bash syntax
-        run: bash -n bin/dots bin/dots-secret bootstrap
+        run: bash -n bin/dots bin/dots-secret bin/claude-ctx bootstrap
