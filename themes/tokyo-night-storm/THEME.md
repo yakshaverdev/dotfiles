@@ -29,7 +29,7 @@ Source-of-truth: `palette.sh` in this directory.
 | tmux | `~/.tmux.conf` | Status bar, pane borders, popup borders |
 | Starship prompt | `~/.config/starship.toml` | Native `[palettes.tokyo_night_storm]` directive |
 | btop | `~/.config/btop/themes/tokyo-night-storm.theme` | Activated via `color_theme` in `btop.conf` |
-| Atuin | `~/.config/atuin/themes/tokyo-night-storm.toml` | **Activation requires** `[theme] name = "tokyo-night-storm"` in `~/.config/atuin/config.toml` (config.toml is not tracked in dotfiles — has session token) |
+| Atuin | `~/.config/atuin/themes/tokyo-night-storm.toml` | Activated by `[theme] name = "tokyo-night-storm"` in `~/.config/atuin/config.toml`, tracked in `stow/common/atuin` |
 | Sketchybar | `~/.config/sketchybar/sketchybarrc` + `plugins/space.sh` + `plugins/wifi.sh` + `plugins/tailscale.sh` | All bar colors, space indicators, status icons |
 | JankyBorders | `~/.config/borders/bordersrc` | Yellow active, gray-blue inactive |
 | Zed | `~/.config/zed/settings.json` | "Tokyo Night Storm" theme (built-in) |
@@ -54,14 +54,15 @@ To tweak the theme: edit `palette.sh` first, then propagate hex changes to app-s
 
 ### Atuin
 
-The atuin theme **does not auto-activate**. Add to `~/.config/atuin/config.toml`:
+`config.toml` is tracked in `stow/common/atuin` and activates the theme:
 
 ```toml
 [theme]
 name = "tokyo-night-storm"
 ```
 
-(This file is not tracked in dotfiles because it contains the sync session token.)
+The sync session token lives in `~/.local/share/atuin/`, not in the tracked
+config.
 
 ### Starship
 

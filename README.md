@@ -36,8 +36,8 @@ wallpapers/generate.sh  # regenerates the (gitignored) PNGs
 zen/link-profile.sh
 t3/                     # portable T3 Code settings (keybindings + base settings)
 
-stow/common/<pkg>       # both OSes: atuin bat btop claude gh git mise prompt
-                        #            tmux zsh
+stow/common/<pkg>       # both OSes: atuin bat btop claude gh git mise pnpm
+                        #            prompt tmux zsh
 stow/darwin/<pkg>       # macOS only: ghostty wm zed
 stow/linux/<pkg>        # Linux only: systemd
 ```
@@ -59,6 +59,20 @@ stow --no-folding -d "$DOTFILES/stow/<group>" -t "$HOME" <pkg>
 | `dot t3 diff` | Diff live vs tracked T3 settings |
 
 After the first install, `dot` is on your `PATH` via `~/.local/bin/dot`.
+
+## CI
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on pushes and pull requests
+to `master`, plus manual dispatch:
+
+- **lint** — shellcheck, `zsh -n`/`bash -n` syntax checks, JSON validity, and
+  parsing `stow/common/git/.config/git/config`.
+- **secrets** — full-history `gitleaks` scan using `.gitleaks.toml`.
+- **bootstrap-linux** — runs `./bootstrap` as a fresh non-root user in an
+  Ubuntu 24.04 container with `MISE_DISABLE_TOOLS=erlang,elixir,ruby`, then
+  runs `dot doctor`.
+- **stow-macos** — simulates stowing every `common` and `darwin` package into
+  a temporary `$HOME` and checks bash syntax.
 
 ## Adding a package
 
@@ -85,6 +99,17 @@ mise install
 Commit `config.toml` and `mise.lock` together. Anything that is not
 available through mise (GUI apps, system daemons) belongs in `packages/Brewfile`
 or `packages/apt.txt` instead.
+
+## Supply-chain cooldown
+
+New dependency versions are ignored for 7 days:
+
+- **npm** — `dot install` ensures `~/.npmrc` has `min-release-age=7`. The file
+  also holds a private auth token and machine-specific prefix, so it is never
+  tracked.
+- **pnpm** — the tracked `stow/common/pnpm/.config/pnpm/rc` sets
+  `minimumReleaseAge=10080` (minutes).
+- **uv/pip** — `UV_EXCLUDE_NEWER` and the `sfw` wrappers in `common.zsh`.
 
 ## T3 Code settings
 
@@ -119,7 +144,15 @@ Machine-local, untracked shell config goes in `~/.config/zsh/local.zsh`.
 Git identity is **not** in the repo. `dot install` writes
 `~/.config/git/identity` from `GIT_USER_NAME` / `GIT_USER_EMAIL`, which
 `~/.config/git/config` includes. `GIT_USER_NAME` must be a full name
-(e.g. `Ada Lovelace`), never an email address.
+(e.g. `Ada Lovelace`), never an email address. Identity is global only;
+`dot install` removes any repo-local `user.name`/`user.email` override.
+
+## Remote hosts
+
+Remote hosts use Tailscale MagicDNS names (no IPs in `~/.env`):
+
+- `vps` — mosh to `ubuntu@terminator-silver` (the OVH VPS) and attach to tmux.
+- `nas` — SSH to `akshaydeshraj@nas`.
 
 ## Theme
 

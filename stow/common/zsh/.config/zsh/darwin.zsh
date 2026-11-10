@@ -50,7 +50,6 @@ alias cpp='g++-15 -std=gnu++20 -O2 -Wall -DLOCAL'
 alias serena-work='docker run --rm -i --network host -v ~/Code/work:/workspaces/projects ghcr.io/oraios/serena:latest serena'
 alias serena-personal='docker run --rm -i --network host -v ~/Code/personal:/workspaces/projects ghcr.io/oraios/serena:latest serena'
 
-# ─── Remote hosts (IPs from ~/.env) ──────────────────────────────
-alias hetz='TERM=xterm-256color mosh akshay@${HETZNER_IP} -- tmux new -A -s main'
-alias hetz-c='TERM=xterm-256color mosh akshay@${HETZNER_IP} -- tmux new-session -A -s claude \; send-keys "cd ~/sysadmin && claude" Enter'
-alias ssh-nas='ssh akshaydeshraj@${NAS_IP}'
+# ─── Remote hosts (Tailscale MagicDNS names, no IPs) ─────────────
+alias vps='TERM=xterm-256color mosh ubuntu@terminator-silver -- tmux new -A -s main'
+alias nas='ssh akshaydeshraj@nas'

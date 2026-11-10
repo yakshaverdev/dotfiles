@@ -47,6 +47,25 @@ fail() { FAILURES+=("$*"); }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# Ensure ~/.npmrc carries the npm release cooldown. The file also holds a
+# private auth token and machine-specific prefix, so it is never tracked and
+# this function never prints or rewrites its existing lines.
+ensure_npm_cooldown() {
+  local npmrc="$HOME/.npmrc"
+  if [[ ! -f "$npmrc" ]]; then
+    (umask 077 && printf 'min-release-age=7\n' > "$npmrc") || return 1
+    return 0
+  fi
+  if grep -qE '^[[:space:]]*min-release-age[[:space:]]*=' "$npmrc"; then
+    return 0
+  fi
+  # Keep the setting on its own line even if the file lacks a trailing newline.
+  if [[ -s "$npmrc" ]] && [[ "$(tail -c 1 "$npmrc")" != "" ]]; then
+    printf '\n' >> "$npmrc" || return 1
+  fi
+  printf 'min-release-age=7\n' >> "$npmrc" || return 1
+}
+
 mise_bin() {
   if have mise; then
     command -v mise
@@ -152,10 +171,10 @@ cmd_install() {
       if ((${#pkgs[@]})); then
         if sudo -n true 2>/dev/null; then
           sudo apt-get update || fail "apt-get update"
-          sudo apt-get install -y "${pkgs[@]}" || fail "apt-get install"
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}" || fail "apt-get install"
         else
           warn "sudo requires a password; run this yourself:"
-          info "  sudo apt-get update && sudo apt-get install -y ${pkgs[*]}"
+          info "  sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ${pkgs[*]}"
           MANUAL+=("Install apt packages (sudo apt-get install -y ${pkgs[*]})")
         fi
       fi
@@ -226,7 +245,15 @@ cmd_install() {
     done
   done
 
-  # 6. Git identity
+  # 6. Supply-chain cooldown (npm)
+  info "→ Ensuring npm release cooldown (~/.npmrc)..."
+  if ensure_npm_cooldown; then
+    info "  min-release-age=7 present in ~/.npmrc"
+  else
+    fail "npm cooldown (~/.npmrc)"
+  fi
+
+  # 7. Git identity
   info "→ Configuring git identity..."
   local identity="$HOME/.config/git/identity"
   if [[ -f "$identity" ]]; then
@@ -251,6 +278,20 @@ cmd_install() {
     info "  wrote ~/.config/git/identity"
   fi
 
+  # Identity must be global only. A repo-local user.name/user.email caused
+  # 185 commits with the wrong author, so remove any local override.
+  local local_git_name local_git_email
+  local_git_name="$(git -C "$DOTFILES" config --local user.name 2>/dev/null || true)"
+  if [[ -n "$local_git_name" ]]; then
+    git -C "$DOTFILES" config --local --unset-all user.name || true
+    info "  removed repo-local user.name (\"$local_git_name\")"
+  fi
+  local_git_email="$(git -C "$DOTFILES" config --local user.email 2>/dev/null || true)"
+  if [[ -n "$local_git_email" ]]; then
+    git -C "$DOTFILES" config --local --unset-all user.email || true
+    info "  removed repo-local user.email (\"$local_git_email\")"
+  fi
+
   if [[ -f "$HOME/.gitconfig" && ! -L "$HOME/.gitconfig" ]]; then
     backup_path ".gitconfig"
     local extra=""
@@ -261,7 +302,7 @@ cmd_install() {
     fi
   fi
 
-  # 7. mise install (non-fatal)
+  # 8. mise install (non-fatal)
   if [[ -n "$MISE" ]]; then
     info "→ mise install..."
     if ! "$MISE" install --yes 2>&1 | sed 's/^/  /'; then
@@ -271,7 +312,7 @@ cmd_install() {
     fail "mise not available"
   fi
 
-  # 8. bat cache + git hooks
+  # 9. bat cache + git hooks
   if have bat; then
     info "→ bat cache --build"
     bat cache --build >/dev/null 2>&1 || fail "bat cache --build"
@@ -279,7 +320,7 @@ cmd_install() {
   info "→ git core.hooksPath"
   git -C "$DOTFILES" config core.hooksPath "$DOTFILES/hooks" || fail "git hooksPath"
 
-  # 9. OS-specific post-install
+  # 10. OS-specific post-install
   if [[ "$OS" == darwin ]]; then
     info "→ macOS defaults..."
     bash "$DOTFILES/scripts/macos-defaults.sh" || fail "macOS defaults"
@@ -298,7 +339,7 @@ cmd_install() {
     fi
   fi
 
-  # 10. Login shell
+  # 11. Login shell
   local zsh_path
   zsh_path="$(command -v zsh || true)"
   if [[ -z "$zsh_path" ]]; then
@@ -323,7 +364,7 @@ cmd_install() {
     fi
   fi
 
-  # 11. Directories, dot on PATH, T3 sync
+  # 12. Directories, dot on PATH, T3 sync
   mkdir -p "$HOME/.zsh/cache"
   info "→ Linking dot into ~/.local/bin"
   mkdir -p "$HOME/.local/bin"
@@ -333,12 +374,12 @@ cmd_install() {
     cmd_t3 push || fail "dot t3 push"
   fi
 
-  # 12. GitHub auth (never prompt)
+  # 13. GitHub auth (never prompt)
   if ! gh auth status >/dev/null 2>&1; then
     MANUAL+=("Authenticate GitHub: gh auth login")
   fi
 
-  # 13. Summary
+  # 14. Summary
   info ""
   info "=== dot install complete ==="
   if ((${#FAILURES[@]})); then
@@ -413,13 +454,22 @@ cmd_doctor() {
   # Commands
   info "→ Commands"
   local c
-  for c in zsh stow mise git gh claude codex opencode starship atuin fzf rg eza bat zoxide delta; do
+  for c in zsh stow mise git gh starship atuin fzf rg eza bat zoxide delta; do
     if [[ "$c" == mise ]]; then
       if mise_bin >/dev/null; then ok "mise"; else bad "mise not installed"; fi
     elif have "$c"; then
       ok "$c"
     else
       bad "$c not found"
+    fi
+  done
+  # Agent CLIs are installed by their own installers, not this repo, so a
+  # missing binary is a warning rather than a failure.
+  for c in claude codex opencode; do
+    if have "$c"; then
+      ok "$c"
+    else
+      note "$c not found (install it with its own installer)"
     fi
   done
 
@@ -446,6 +496,19 @@ cmd_doctor() {
   else
     missing="$("$MISE" ls --missing 2>/dev/null || true)"
     missing="$(printf '%s\n' "$missing" | sed '/^[[:space:]]*$/d' || true)"
+    # Tools intentionally disabled (e.g. MISE_DISABLE_TOOLS in CI) are not
+    # missing for our purposes.
+    if [[ -n "${MISE_DISABLE_TOOLS:-}" ]]; then
+      local -a disabled=()
+      local disabled_tool
+      IFS=',' read -r -a disabled <<< "$MISE_DISABLE_TOOLS"
+      for disabled_tool in "${disabled[@]}"; do
+        disabled_tool="${disabled_tool//[[:space:]]/}"
+        [[ -n "$disabled_tool" ]] || continue
+        missing="$(printf '%s\n' "$missing" \
+          | grep -vE "^[[:space:]]*${disabled_tool}(@|[[:space:]]|$)" || true)"
+      done
+    fi
     if [[ -z "$missing" ]]; then
       ok "no missing tools"
     else
@@ -485,6 +548,14 @@ cmd_doctor() {
         fi
       done < "$apt_file"
     fi
+  fi
+
+  # npm supply-chain cooldown
+  info "→ npm cooldown"
+  if [[ -f "$HOME/.npmrc" ]] && grep -qE '^[[:space:]]*min-release-age[[:space:]]*=' "$HOME/.npmrc"; then
+    ok "$HOME/.npmrc has min-release-age"
+  else
+    bad "$HOME/.npmrc missing min-release-age (run: dot install)"
   fi
 
   # Git identity

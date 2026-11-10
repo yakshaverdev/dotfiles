@@ -1,0 +1,9 @@
+# Atuin config (shared). The sync session token lives in
+# ~/.local/share/atuin/, not here, so this file is safe to track.
+enter_accept = true
+
+[sync]
+records = true
+
+[theme]
+name = "tokyo-night-storm"

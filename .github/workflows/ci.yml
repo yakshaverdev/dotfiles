@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install linters
+        run: sudo apt-get update && sudo apt-get install -y zsh shellcheck
+      - name: ShellCheck
+        run: >-
+          shellcheck -x bin/dot bootstrap hooks/pre-commit scripts/*.sh
+          stow/common/tmux/.config/tmux/*.sh
+      - name: zsh syntax
+        run: |
+          zsh -n stow/common/zsh/.zshrc
+          for f in stow/common/zsh/.config/zsh/*.zsh; do
+            zsh -n "$f"
+          done
+      - name: bash syntax
+        run: |
+          while IFS= read -r -d '' f; do
+            bash -n "$f"
+          done < <(find . -name '*.sh' -not -path './.git/*' -print0)
+      - name: JSON validity
+        run: |
+          jq empty t3/*.json
+          jq empty stow/common/claude/.claude/settings.json
+      - name: git config parses
+        run: git config --file stow/common/git/.config/git/config --list >/dev/null
+
+  secrets:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: jdx/mise-action@v2
+        env:
+          MISE_CONFIG_FILE: ${{ github.workspace }}/stow/common/mise/.config/mise/config.toml
+        with:
+          install_args: gitleaks
+      - name: gitleaks
+        run: gitleaks git --redact --no-banner --config .gitleaks.toml
+
+  bootstrap-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container: ubuntu:24.04
+    steps:
+      - name: Install git for checkout
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y git ca-certificates
+      - uses: actions/checkout@v4
+      - name: Prepare container and CI user
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get install -y sudo git curl ca-certificates
+          useradd -m -s /bin/bash ci
+          echo 'ci ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/ci
+          chmod 0440 /etc/sudoers.d/ci
+          mkdir -p /home/ci/code/personal/dotfiles
+          cp -a "$GITHUB_WORKSPACE/." /home/ci/code/personal/dotfiles
+          printf 'export GIT_USER_NAME="CI Runner"\nexport GIT_USER_EMAIL="ci@example.com"\n' > /home/ci/.env
+          chmod 600 /home/ci/.env
+          chown -R ci:ci /home/ci
+      - name: Bootstrap
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          su - ci -c "cd ~/code/personal/dotfiles && GITHUB_TOKEN='${GITHUB_TOKEN}' MISE_DISABLE_TOOLS='erlang,elixir,ruby' ./bootstrap"
+      - name: Doctor
+        run: |
+          su - ci -c 'export MISE_DISABLE_TOOLS=erlang,elixir,ruby PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"; /home/ci/.local/bin/dot doctor'
+
+  stow-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stow
+        run: brew install stow
+      - name: Simulate stowing every package
+        run: |
+          TMPHOME="$(mktemp -d)"
+          for group in common darwin; do
+            for pkg in stow/"$group"/*/; do
+              pkg="$(basename "$pkg")"
+              echo "stow $group/$pkg"
+              stow --no-folding -d "stow/$group" -t "$TMPHOME" --simulate "$pkg"
+            done
+          done
+      - name: bash syntax
+        run: bash -n bin/dot bootstrap
