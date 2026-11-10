@@ -12,7 +12,7 @@ CLI tools and runtimes are installed with [mise](https://mise.jdx.dev/).
 ## Quick start
 
 ```bash
-git clone https://github.com/akshaydeshraj/dotfiles ~/Code/personal/dotfiles
+git clone https://github.com/yakshaverdev/dotfiles ~/Code/personal/dotfiles
 cd ~/Code/personal/dotfiles
 cp .env.example ~/.env && $EDITOR ~/.env   # fill in real values
 ./bootstrap
