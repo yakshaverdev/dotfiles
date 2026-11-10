@@ -41,13 +41,13 @@ jobs:
 
   secrets:
     runs-on: ubuntu-24.04
+    env:
+      MISE_GLOBAL_CONFIG_FILE: ${{ github.workspace }}/stow/common/mise/.config/mise/config.toml
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: jdx/mise-action@v2
-        env:
-          MISE_CONFIG_FILE: ${{ github.workspace }}/stow/common/mise/.config/mise/config.toml
         with:
           install_args: gitleaks
       - name: gitleaks
