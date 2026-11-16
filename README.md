@@ -153,6 +153,12 @@ INFISICAL_UA_CLIENT_SECRET=...
 `DOT_MACHINE` selects the machine folder and keeps peer sync from syncing
 itself.
 
+A second Infisical instance uses `~/.config/dot/infisical.<instance>.env`
+(mode 600) with `INFISICAL_DOMAIN`, `INFISICAL_ENV`,
+`INFISICAL_UA_CLIENT_ID` and `INFISICAL_UA_CLIENT_SECRET` (no project id).
+Its token cache is `~/.config/dot/.token.<instance>`; this instance keeps
+`.token`.
+
 ### Folders and precedence
 
 | Folder | Who uses it |
@@ -238,17 +244,24 @@ T3 keep working; on a machine that has never synced, `sync` exits 1.
 
 ### Client contexts
 
-Client keys must never mix with personal keys. Each client owns a separate
-Infisical project, with secrets at path `/` in env `prod` and no folders. The
-machine identities (`dot-macbook`, `dot-vps`) are members of those projects.
+Client keys must never mix with personal keys. Each client owns one or more
+separate Infisical projects, with secrets at path `/` in env `prod` and no
+folders. A project may live on another instance. The machine identities
+(`dot-macbook`, `dot-vps`) are members of those projects.
 
 `config/contexts` maps a repo's git origin to a context:
 
 ```
-# name   infisical-project-id                   mode    git remote patterns
-shovel   05f7ffd8-7780-4718-a48a-ebbe1a85fc6a   strict  *github.com[:/]shovelers/*
-skit     0487e2ec-049a-42f8-9706-ce853f4ed478   strict  *gitlab.com[:/]skit-ai/* *github.com[:/]skit-ai/*
+# name  [instance:]project-id[,...]  mode    git remote patterns
+shovel  05f7ffd8-7780-4718-a48a-ebbe1a85fc6a  strict  *github.com[:/]shovelers/*
+skit    skit:63b7ede9-2a42-4d37-8651-c80ec3b33b6c,skit:3182f9cb-3418-4e7f-9980-d99b3513bcf3  strict  *gitlab.com[:/]skit-ai/* *github.com[:/]skit-ai/*
 ```
+
+The project column is a comma-separated list of `[instance:]project-id`. No
+prefix means the personal instance (`infisical.env`); `skit:` means
+`infisical.skit.env`. Instance names match `^[a-z0-9_-]+$`. Projects are read
+in order and merged, so later projects win on name collisions. `set`, `rm`
+and `import` write to the first project.
 
 - `strict` — inside the context, every personal name is unset before the
   client values are applied.
@@ -292,7 +305,7 @@ started with).
 `dots secret sync` refreshes every context cache. A failing client project
 warns and keeps that context's previous files, so one broken client does not
 affect personal secrets or the other clients. `dots secret doctor` reports
-each context's reachability and cache age.
+each context's reachability, cache age, and a missing instance creds file.
 
 To add a client:
 

@@ -1,5 +1,9 @@
-# Client contexts: each has its own Infisical project at path / in env prod.
+# Client contexts: each has its own Infisical project(s) at path / in env prod.
+# Project column: comma-separated [instance:]project-id. No prefix means the
+# personal instance (~/.config/dot/infisical.env); other instances read
+# ~/.config/dot/infisical.<instance>.env and must match ^[a-z0-9_-]+$.
+# Projects are read in order and merged (later wins); writes go to the first.
 # A repo whose origin matches a pattern below gets that context.
-#   name   infisical-project-id                   mode    git remote patterns (shell globs, matched against `git remote get-url origin`)
-shovel   05f7ffd8-7780-4718-a48a-ebbe1a85fc6a   strict  *github.com[:/]shovelers/*
-skit     0487e2ec-049a-42f8-9706-ce853f4ed478   strict  *gitlab.com[:/]skit-ai/* *github.com[:/]skit-ai/*
+#   name     infisical-project-id[,...]              mode    git remote patterns (shell globs, matched against `git remote get-url origin`)
+shovel     05f7ffd8-7780-4718-a48a-ebbe1a85fc6a     strict  *github.com[:/]shovelers/*
+skit       skit:63b7ede9-2a42-4d37-8651-c80ec3b33b6c,skit:3182f9cb-3418-4e7f-9980-d99b3513bcf3   strict  *gitlab.com[:/]skit-ai/* *github.com[:/]skit-ai/*
