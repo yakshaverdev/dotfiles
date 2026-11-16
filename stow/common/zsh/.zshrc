@@ -29,8 +29,8 @@ case "$OSTYPE" in
     ;;
 esac
 
-# ─── Secrets injection (Infisical wrappers) ──────────────────────
-[[ -z "${DOT_AGENT_SHELL:-}" && -f "$HOME/.config/zsh/infisical.zsh" ]] && source "$HOME/.config/zsh/infisical.zsh"
+# ─── Agent CLI default flags ────────────────────────────────────
+[[ -z "${DOT_AGENT_SHELL:-}" && -f "$HOME/.config/zsh/agents.zsh" ]] && source "$HOME/.config/zsh/agents.zsh"
 
 # ─── Per-host overrides (e.g. hosts/laptop.zsh) ──────────────────
 [[ -f "$HOME/.config/zsh/hosts/${HOST%%.*}.zsh" ]] && \

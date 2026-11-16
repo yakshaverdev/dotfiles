@@ -349,8 +349,9 @@ projects.
 Claude Code, Codex, OpenCode and T3 Code snapshot `~/.zshrc` for their own
 shells. When `CLAUDECODE`, `T3CODE_THREAD_ID`, `CODEX_SANDBOX`, `CODEX_THREAD_ID`
 or `OPENCODE` is set, `~/.zshrc` exports `DOT_AGENT_SHELL=1` and skips the
-tool-replacement aliases (`grep→rg`, `cat→bat`, `ls→eza`, …) and the Infisical
-agent wrappers. Agents get plain tools and the real CLIs.
+tool-replacement aliases (`grep→rg`, `cat→bat`, `ls→eza`, …) and the
+`claude`/`codex` flag wrappers in `agents.zsh`. Agents get plain tools and the
+real CLIs.
 
 Machine-local, untracked shell config goes in `~/.config/zsh/local.zsh`.
 
