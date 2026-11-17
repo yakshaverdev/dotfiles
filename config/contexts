@@ -7,3 +7,4 @@
 #   name     infisical-project-id[,...]              mode    git remote patterns (shell globs, matched against `git remote get-url origin`)
 shovel     05f7ffd8-7780-4718-a48a-ebbe1a85fc6a     strict  *github.com[:/]shovelers/*
 skit       skit:63b7ede9-2a42-4d37-8651-c80ec3b33b6c,skit:3182f9cb-3418-4e7f-9980-d99b3513bcf3   strict  *gitlab.com[:/]skit-ai/* *github.com[:/]skit-ai/*
+lyre       05f7ffd8-7780-4718-a48a-ebbe1a85fc6a,skit:63b7ede9-2a42-4d37-8651-c80ec3b33b6c,skit:3182f9cb-3418-4e7f-9980-d99b3513bcf3   merge   *github.com[:/]yakshaverdev/lyre *github.com[:/]yakshaverdev/lyre.git
