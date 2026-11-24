@@ -2,6 +2,10 @@
 # (agent commands, `ssh host cmd`, scripts). Keep it small, silent and
 # never failing.
 
+# ~/.local/bin (dots, claude-ctx, standalone codex and claude) for every
+# shell, including `ssh host cmd`.
+[[ -d "$HOME/.local/bin" ]] && path=("$HOME/.local/bin" $path)
+
 # mise shims, so non-interactive shells (ssh commands, T3 device hosts)
 # find node/npm and other mise tools without ~/.zshrc.
 [[ -d "$HOME/.local/share/mise/shims" ]] && path=("$HOME/.local/share/mise/shims" $path)

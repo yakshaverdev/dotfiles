@@ -92,10 +92,13 @@ mise_bin() {
   fi
 }
 
-# Codex may arrive as the macOS app only, with no `codex` on PATH.
+# Codex's standalone installer links ~/.local/bin/codex, which non-login
+# shells may not have on PATH; the macOS app bundles its own copy.
 codex_bin() {
   if have codex; then
     command -v codex
+  elif [[ -x "$HOME/.local/bin/codex" ]]; then
+    printf '%s\n' "$HOME/.local/bin/codex"
   elif [[ -x /Applications/Codex.app/Contents/Resources/codex ]]; then
     printf '%s\n' /Applications/Codex.app/Contents/Resources/codex
   else
