@@ -3,8 +3,426 @@
 # Claude starts MCP servers directly, without a shell, so BASH_ENV and
 # ~/.zshenv never run for them. Apply the client context for the thread's
 # working directory here, so Claude and every MCP server it starts inherit it.
+
+# Failover state shared with the status line command and the StopFailure hook.
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/claude-accounts"
+log_file="$state_dir/failover.log"
+
+utc_time() { # epoch seconds -> ISO 8601 UTC
+  date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
+    date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
+    printf '%s' "$1"
+}
+
+# Append to the debug log. Never logs token values and never fails the caller.
+log_line() { # message
+  [ -d "$state_dir" ] || mkdir -p "$state_dir" 2>/dev/null || return 0
+  local mode="exec"
+  if [ -n "${CLAUDE_CTX_WRAPPER_PID:-}" ]; then
+    mode="terminal"
+  elif [ -n "${T3CODE_THREAD_ID:-}" ]; then
+    mode="t3:$T3CODE_THREAD_ID"
+  fi
+  printf '%s pid=%s mode=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$mode" "$1" \
+    >> "$log_file" 2>/dev/null || true
+  return 0
+}
+
+# Keep the last 2000 lines once the log passes 512 KB.
+rotate_log() {
+  [ -f "$log_file" ] || return 0
+  local size
+  size=$(wc -c < "$log_file" 2>/dev/null | tr -d '[:space:]') || return 0
+  case "$size" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  [ "$size" -gt 524288 ] || return 0
+  if tail -n 2000 "$log_file" > "$log_file.tmp" 2>/dev/null; then
+    mv -f "$log_file.tmp" "$log_file" 2>/dev/null || rm -f "$log_file.tmp" 2>/dev/null
+  else
+    rm -f "$log_file.tmp" 2>/dev/null
+  fi
+  return 0
+}
+
+pid_is_ancestor() { # pid -> 0 when it is this process or an ancestor of it
+  local want="$1" pid=$PPID depth=0
+  while [ -n "$pid" ] && [ "$pid" -gt 0 ] 2>/dev/null && [ "$depth" -lt 8 ]; do
+    [ "$pid" = "$want" ] && return 0
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+    depth=$((depth + 1))
+  done
+  return 1
+}
+
+# These two subcommands are Claude Code callbacks, not Claude launches.
+# Handle them before everything else, and never exec claude for them.
+case "${1:-}" in
+  __limit)
+    payload=$(cat 2>/dev/null) || payload=""
+    [ -n "${CLAUDE_ACCOUNT:-}" ] || exit 0
+    mkdir -p "$state_dir" 2>/dev/null || true
+    chmod 700 "$state_dir" 2>/dev/null || true
+    rotate_log
+    now=$(date +%s)
+    end=0
+    limit_src="default 30m"
+    rate_file="$state_dir/$CLAUDE_ACCOUNT.rate.json"
+    if [ -r "$rate_file" ] && command -v jq >/dev/null 2>&1; then
+      end=$(jq -r --argjson now "$now" '
+        [.five_hour, .seven_day]
+        | map(select(type == "object"))
+        | map(.resets_at | select(type == "number"))
+        | map(select(. > $now))
+        | max // 0
+      ' "$rate_file" 2>/dev/null)
+      case "$end" in
+        ''|*[!0-9]*) end=0 ;;
+      esac
+      [ "$end" -gt "$now" ] && limit_src="rate.json"
+    fi
+    if [ "$end" -le "$now" ]; then
+      end=$((now + 1800))
+      limit_src="default 30m"
+    fi
+    printf '%s\n' "$end" > "$state_dir/$CLAUDE_ACCOUNT.limited" 2>/dev/null || true
+    log_line "limit account=$CLAUDE_ACCOUNT until=$(utc_time "$end") source=$limit_src"
+
+    t3=0
+    wrap=0
+    [ -n "${T3CODE_THREAD_ID:-}" ] && t3=1
+    [ -n "${CLAUDE_CTX_WRAPPER_PID:-}" ] && wrap=1
+    if [ "$t3" = 0 ] && [ "$wrap" = 0 ]; then
+      log_line "no kill: not t3/terminal"
+      exit 0
+    fi
+    pid="${CLAUDE_CTX_PID:-}"
+    if [ -z "$pid" ] || ! pid_is_ancestor "$pid"; then
+      log_line "no kill: CLAUDE_CTX_PID not an ancestor"
+      exit 0
+    fi
+    if [ "$wrap" = 1 ]; then
+      session=""
+      if [ -n "$payload" ] && command -v jq >/dev/null 2>&1; then
+        session=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null) || session=""
+      fi
+      if [ -z "$session" ]; then
+        log_line "no kill: no session_id"
+        exit 0
+      fi
+      if printf '%s\n' "$session" > "$state_dir/relaunch.$CLAUDE_CTX_WRAPPER_PID" 2>/dev/null; then
+        log_line "relaunch session=$session"
+      else
+        log_line "no kill: relaunch file write failed"
+        exit 0
+      fi
+    fi
+    log_line "kill pid=$pid"
+    ( sleep 1; kill -TERM "$pid" ) >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+    exit 0
+    ;;
+  __statusline)
+    payload=$(cat 2>/dev/null) || payload=""
+    account="${CLAUDE_ACCOUNT:-}"
+    rates=""
+    if [ -n "$payload" ] && command -v jq >/dev/null 2>&1; then
+      rates=$(printf '%s' "$payload" | jq -c '.rate_limits // empty' 2>/dev/null) || rates=""
+    fi
+    five=""
+    seven=""
+    if [ -n "$rates" ]; then
+      five=$(printf '%s' "$rates" | jq -r \
+        '(.five_hour.used_percentage // empty) | if type == "number" then floor else empty end' \
+        2>/dev/null) || five=""
+      seven=$(printf '%s' "$rates" | jq -r \
+        '(.seven_day.used_percentage // empty) | if type == "number" then floor else empty end' \
+        2>/dev/null) || seven=""
+    fi
+    if [ -n "$account" ] && [ -n "$rates" ]; then
+      prev_file="$state_dir/$account.rate.json"
+      prev_five=""
+      prev_seven=""
+      if [ -r "$prev_file" ]; then
+        prev_five=$(jq -r '(.five_hour.used_percentage // empty) | if type == "number" then floor else empty end' \
+          "$prev_file" 2>/dev/null) || prev_five=""
+        prev_seven=$(jq -r '(.seven_day.used_percentage // empty) | if type == "number" then floor else empty end' \
+          "$prev_file" 2>/dev/null) || prev_seven=""
+      fi
+      if [ "$five" != "$prev_five" ] || [ "$seven" != "$prev_seven" ]; then
+        log_line "status account=$account 5h=${five:-?} 7d=${seven:-?}"
+      fi
+      mkdir -p "$state_dir" 2>/dev/null || true
+      chmod 700 "$state_dir" 2>/dev/null || true
+      tmp=$(mktemp "$state_dir/.rate.XXXXXX" 2>/dev/null) || tmp=""
+      if [ -n "$tmp" ]; then
+        if printf '%s\n' "$rates" > "$tmp" 2>/dev/null &&
+          mv -f "$tmp" "$state_dir/$account.rate.json" 2>/dev/null; then
+          :
+        else
+          rm -f "$tmp" 2>/dev/null
+        fi
+      fi
+    fi
+    line="${account:-login}"
+    [ -n "$five" ] && line="$line · 5h ${five}%"
+    [ -n "$seven" ] && line="$line · 7d ${seven}%"
+    printf '%s\n' "$line"
+    exit 0
+    ;;
+esac
+
 [[ -r "$HOME/.config/zsh/contexts.bash" ]] && source "$HOME/.config/zsh/contexts.bash"
 # Project API credentials are for project tools. Claude itself uses the
 # signed-in subscription, which ANTHROPIC_API_KEY would otherwise override.
 unset ANTHROPIC_API_KEY
+
+# Read one KEY=value line from the systemd EnvironmentFile without sourcing it.
+secret_from_file() { # NAME -> value on stdout
+  local name="$1" file="$HOME/.config/dot/secrets.env" line key
+  [ -r "$file" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    case "$line" in
+      ''|'#'*) continue ;;
+    esac
+    key="${line%%=*}"
+    [ "$key" = "$name" ] || continue
+    printf '%s' "${line#*=}"
+    return 0
+  done < "$file"
+  return 1
+}
+
+read_token() { # account name -> token on stdout, environment first
+  local name="$1" var token
+  var="CLAUDE_TOKEN_$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
+  token="${!var}"
+  if [ -n "$token" ]; then
+    printf '%s' "$token"
+    return 0
+  fi
+  secret_from_file "$var"
+}
+
+# Sets limit_end and limit_source from the limited file and the rate file.
+limited_until() { # account name
+  local name="$1" file value from=""
+  limit_end=0
+  limit_source=""
+  file="$state_dir/$name.limited"
+  if [ -r "$file" ]; then
+    value=$(cat "$file" 2>/dev/null) || value=""
+    case "$value" in
+      ''|*[!0-9]*) ;;
+      *)
+        limit_end="$value"
+        from="limited-file"
+        ;;
+    esac
+  fi
+  file="$state_dir/$name.rate.json"
+  if [ -r "$file" ] && command -v jq >/dev/null 2>&1; then
+    value=$(jq -r '
+      [.five_hour, .seven_day]
+      | map(select(type == "object"))
+      | map(select((.used_percentage // 0) >= 100))
+      | map(.resets_at | select(type == "number"))
+      | max // 0
+    ' "$file" 2>/dev/null) || value=""
+    case "$value" in
+      ''|*[!0-9]*) ;;
+      *)
+        if [ "$value" -gt "$limit_end" ] 2>/dev/null; then
+          limit_end="$value"
+          from="rate.json"
+        fi
+        ;;
+    esac
+  fi
+  limit_source="$from"
+}
+
+# Log each account's state. With log_only=0 also pick the first healthy
+# subscription in priority order (team, then ultra), else the one whose limit
+# ends first. Tokens live in the non-exported tok_team / tok_ultra so a
+# relaunch can still read them.
+choose_account() { # [log-only]
+  local log_only="${1:-0}"
+  local now name token end pick="" pick_token="" fallback="" fallback_token="" fallback_end=0
+  now=$(date +%s)
+  for name in team ultra; do
+    token=""
+    case "$name" in
+      team) token="$tok_team" ;;
+      ultra) token="$tok_ultra" ;;
+    esac
+    if [ -z "$token" ]; then
+      log_line "$name: no token"
+      continue
+    fi
+    limited_until "$name"
+    end="${limit_end:-0}"
+    case "$end" in
+      ''|*[!0-9]*) end=0 ;;
+    esac
+    if [ "$end" -le "$now" ]; then
+      log_line "$name: ok"
+      if [ "$log_only" = 0 ] && [ -z "$pick" ]; then
+        pick="$name"
+        pick_token="$token"
+      fi
+      continue
+    fi
+    log_line "$name: limited until $(utc_time "$end") (source: ${limit_source:-limited-file})"
+    if [ "$log_only" = 0 ]; then
+      if [ -z "$fallback" ] || [ "$end" -lt "$fallback_end" ]; then
+        fallback="$name"
+        fallback_token="$token"
+        fallback_end="$end"
+      fi
+    fi
+  done
+  [ "$log_only" = 0 ] || return 0
+  if [ -z "$pick" ]; then
+    pick="$fallback"
+    pick_token="$fallback_token"
+  fi
+  if [ -z "$pick" ]; then
+    log_line "pick=none (stored login)"
+    return 0
+  fi
+  log_line "pick=$pick"
+  CLAUDE_ACCOUNT="$pick"
+  CLAUDE_CODE_OAUTH_TOKEN="$pick_token"
+  export CLAUDE_ACCOUNT CLAUDE_CODE_OAUTH_TOKEN
+}
+
+# Relaunch args: the original args minus -c/--continue, -r/--resume and
+# --session-id (with their values) and a trailing positional prompt.
+build_relaunch_args() { # sets RELAUNCH_ARGS
+  # shortcut: drops only a trailing positional prompt; flags whose value looks like a prompt may be misread. Upgrade if relaunch args go wrong.
+  local -a src=("$@")
+  local n=$# i=0 a next drop_last=0
+  RELAUNCH_ARGS=()
+  if [ "$n" -gt 0 ]; then
+    case "${src[$((n - 1))]}" in
+      -*) drop_last=0 ;;
+      *) drop_last=1 ;;
+    esac
+  fi
+  while [ "$i" -lt "$n" ]; do
+    if [ "$drop_last" = 1 ] && [ "$i" -eq "$((n - 1))" ]; then
+      break
+    fi
+    a="${src[$i]}"
+    case "$a" in
+      -c|--continue)
+        i=$((i + 1))
+        continue
+        ;;
+      -r|--resume)
+        next="${src[$((i + 1))]:-}"
+        if [ -n "$next" ] && [ "${next#-}" = "$next" ]; then
+          i=$((i + 2))
+        else
+          i=$((i + 1))
+        fi
+        continue
+        ;;
+      --session-id)
+        i=$((i + 2))
+        continue
+        ;;
+    esac
+    RELAUNCH_ARGS+=("$a")
+    i=$((i + 1))
+  done
+}
+
+# --- launch ---------------------------------------------------------
+
+mkdir -p "$state_dir" 2>/dev/null || true
+chmod 700 "$state_dir" 2>/dev/null || true
+rotate_log
+
+# Drop our own shim from PATH so `claude` resolves to the real binary.
+if [ -n "${DOTS_SHIM_DIR:-}" ]; then
+  new_path=""
+  IFS=: read -r -a _path_entries <<< "${PATH:-}"
+  for _entry in "${_path_entries[@]}"; do
+    [ -n "$_entry" ] || continue
+    [ "$_entry" = "$DOTS_SHIM_DIR" ] && continue
+    new_path="${new_path:+$new_path:}$_entry"
+  done
+  PATH="$new_path"
+  export PATH
+  unset _path_entries _entry new_path
+fi
+claude_bin=$(command -v claude 2>/dev/null) || claude_bin=""
+case "$claude_bin" in
+  */bin/shims/*)
+    printf 'claude-ctx: real claude not found on PATH\n' >&2
+    exit 127
+    ;;
+esac
+
+# Decide once whether the caller supplied a token. If so, never fail over.
+caller_token=0
+[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && caller_token=1
+
+tok_team=$(read_token team)
+tok_ultra=$(read_token ultra)
+# Do not leak the raw subscription tokens to claude or its tool shells.
+unset CLAUDE_TOKEN_ULTRA CLAUDE_TOKEN_TEAM
+
+wrap=0
+if [ "$caller_token" = 0 ]; then
+  if [ "${CLAUDE_CTX_FORCE_WRAP:-}" = "1" ]; then
+    wrap=1
+  elif [ -z "${T3CODE_THREAD_ID:-}" ] && [ -t 0 ] && [ -t 1 ]; then
+    wrap=1
+  fi
+fi
+
+if [ "$caller_token" = 1 ]; then
+  choose_account 1
+  log_line "pick=caller-token"
+else
+  choose_account
+fi
+
+if [ "$wrap" = 1 ]; then
+  # Terminal wrapper: run claude in the foreground and restart it on failover.
+  export CLAUDE_CTX_WRAPPER_PID=$$
+  build_relaunch_args "$@"
+  base_args=("${RELAUNCH_ARGS[@]}")
+  args=("$@")
+  relaunch_file="$state_dir/relaunch.$$"
+  rm -f "$relaunch_file" 2>/dev/null
+  # A Ctrl-C must reach claude, not kill the wrapper. TERM/HUP keep the
+  # default action and end the wrapper with the child.
+  trap ':' INT
+  relaunches=0
+  while :; do
+    bash -c 'export CLAUDE_CTX_PID=$$; exec "$0" "$@"' claude "${args[@]}"
+    status=$?
+    [ -f "$relaunch_file" ] || break
+    session=$(cat "$relaunch_file" 2>/dev/null) || session=""
+    rm -f "$relaunch_file" 2>/dev/null
+    if [ -z "$session" ] || [ "$relaunches" -ge 3 ]; then
+      break
+    fi
+    relaunches=$((relaunches + 1))
+    unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_ACCOUNT
+    choose_account
+    args=("${base_args[@]}" --resume "$session" continue)
+    log_line "relaunch #$relaunches --resume $session on ${CLAUDE_ACCOUNT:-stored login}"
+  done
+  exit "$status"
+fi
+
+# Exec mode: the real claude keeps this PID, so CLAUDE_CTX_PID stays exact.
+export CLAUDE_CTX_PID=$$
+unset CLAUDE_CTX_WRAPPER_PID
 exec claude "$@"

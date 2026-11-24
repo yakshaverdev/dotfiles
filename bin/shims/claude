@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Route every `claude` call through claude-ctx. claude-ctx drops this
+# directory from PATH (DOTS_SHIM_DIR) before it starts the real claude.
+exec "${CLAUDE_CTX_BIN:-$HOME/.local/bin/claude-ctx}" "$@"

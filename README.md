@@ -244,6 +244,26 @@ every 15 minutes (systemd `dots-secret-sync.timer` on Linux, a launchd agent on
 macOS). If Infisical is unreachable the previous files are kept, so shells and
 T3 keep working; on a machine that has never synced, `sync` exits 1.
 
+### Claude accounts
+
+`claude-ctx` fails over between two Claude subscriptions: `team` (primary; its
+5-hour window is use-it-or-lose-it) and `ultra` (fallback). Tokens live in
+`CLAUDE_TOKEN_TEAM` and `CLAUDE_TOKEN_ULTRA` (environment first, then
+`~/.config/dot/secrets.env`). Create each with `claude setup-token` while
+logged into that account, then:
+
+```bash
+dots secret set CLAUDE_TOKEN_TEAM
+dots secret set CLAUDE_TOKEN_ULTRA
+```
+
+`~/.local/bin/claude-ctx` uses the first account that has a token and is not
+rate-limited; if both are limited, it uses the one that resets first. State is
+in `${XDG_STATE_HOME:-~/.local/state}/claude-accounts`. A caller-set
+`CLAUDE_CODE_OAUTH_TOKEN` always wins, and with no tokens Claude uses its
+normal login. Under T3 Code a rate limit ends the Claude process, so T3
+reopens the thread on the other account.
+
 ### Client contexts
 
 Client keys must never mix with personal keys. Each client owns one or more

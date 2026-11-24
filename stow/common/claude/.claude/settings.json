@@ -69,6 +69,7 @@
     }
   },
   "agentPushNotifEnabled": true,
+  "autoContinueAtUsageLimit": false,
   "autoCompactWindow": 400000,
   "effortLevel": "medium",
   "model": "opus[1m]",
@@ -81,6 +82,10 @@
     }
   },
   "tui": "fullscreen",
+  "statusLine": {
+    "type": "command",
+    "command": "~/.local/bin/claude-ctx __statusline"
+  },
   "hooks": {
     "SessionStart": [
       {
@@ -124,6 +129,18 @@
             "command": "[ ! -f \"$HOME/.claude/skills/impeccable/scripts/impeccable\" ] || \"$HOME/.claude/skills/impeccable/scripts/impeccable\" hook",
             "timeout": 30,
             "statusMessage": "Design deep pass"
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "matcher": "rate_limit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.local/bin/claude-ctx __limit",
+            "timeout": 5
           }
         ]
       }

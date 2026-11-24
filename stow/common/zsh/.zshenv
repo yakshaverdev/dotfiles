@@ -6,6 +6,18 @@
 # find node/npm and other mise tools without ~/.zshrc.
 [[ -d "$HOME/.local/share/mise/shims" ]] && path=("$HOME/.local/share/mise/shims" $path)
 
+# Route every `claude` call through claude-ctx (<repo>/bin/shims/claude).
+# Keep it first, ahead of the mise shims. ~/.zshenv is stowed from
+# <repo>/stow/common/zsh/.zshenv, so :A resolves the symlink and four :h
+# modifiers climb back up to <repo>.
+if [[ -z ${DOTS_SHIM_DIR:-} ]]; then
+  export DOTS_SHIM_DIR="${DOTFILES:-${${:-$HOME/.zshenv}:A:h:h:h:h}}/bin/shims"
+fi
+if [[ -d ${DOTS_SHIM_DIR:-} ]]; then
+  path=($DOTS_SHIM_DIR $path)
+  typeset -U path
+fi
+
 # Personal secrets from Infisical (written by `dots secret sync`).
 [[ -r "$HOME/.config/dot/secrets.zsh" ]] && source "$HOME/.config/dot/secrets.zsh"
 

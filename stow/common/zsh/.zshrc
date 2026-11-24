@@ -42,3 +42,6 @@ esac
 
 # ─── Plugins (must be last) ──────────────────────────────────────
 [[ -f "$HOME/.config/zsh/plugins.zsh" ]] && source "$HOME/.config/zsh/plugins.zsh"
+
+# ─── claude shim (must beat /etc/zprofile path_helper and brew shellenv) ─
+[[ -n "${DOTS_SHIM_DIR:-}" ]] && path=("$DOTS_SHIM_DIR" $path) && typeset -U path
