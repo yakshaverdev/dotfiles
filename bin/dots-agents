@@ -230,8 +230,7 @@ agents_trust_paths() { # repo
   } | awk '!seen[$0]++'
 }
 
-# Codex only reads <repo>/.codex/config.toml for a trusted project. Report the
-# requirement; never write the trust entry for the user.
+# Codex only reads <repo>/.codex/config.toml for a trusted project.
 agents_codex_project_trusted() { # repo
   local cfg="$HOME/.codex/config.toml" p
   [[ -f "$cfg" ]] || return 1
@@ -899,7 +898,15 @@ agents_sync_project() {
           if [[ -n "$main_root" && "$main_root" != "$repo" ]]; then
             trust_hint="$main_root"
           fi
-          warn "agents: Codex ignores .codex/config.toml until this project is trusted: add [projects.\"$trust_hint\"] trust_level = \"trusted\" to ~/.codex/config.toml (dots does not do this for you)"
+          # Codex ignores .codex/config.toml in an untrusted project. Trust the
+          # main repo (that covers its worktrees), unless the user already
+          # wrote an entry for it, such as "untrusted".
+          if grep -qxF "[projects.\"$trust_hint\"]" "$HOME/.codex/config.toml" 2>/dev/null; then
+            warn "agents: Codex does not trust $trust_hint (an existing entry says so); it ignores .codex/config.toml"
+          else
+            printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$trust_hint" >> "$HOME/.codex/config.toml"
+            info "  codex: trusted $(agents_display_path "$trust_hint")"
+          fi
         fi
       fi
     fi

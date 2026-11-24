@@ -4,6 +4,10 @@
 
 [settings]
 idiomatic_version_file_enable_tools = ["python"]
+# Trust every mise.toml in cloned repos and T3 worktrees. An untrusted one
+# breaks every shim (opencode included) in that repo, and trust is per path,
+# so each new T3 worktree would need `mise trust` again.
+trusted_config_paths = ["~/code", "~/Code", "~/.t3/worktrees"]
 activate_aggressive = true
 lockfile = true
 # Installs read the lockfile but never rewrite it. Update it only with

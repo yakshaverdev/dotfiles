@@ -20,8 +20,13 @@ gets its native `bearer_token_env_var` / `env_http_headers` / `env_vars`
 fields). A reference that cannot be expressed natively, or a client reference
 whose value is empty, fails that one server and the rest of the sync continues.
 
-Both agents require a one-time trust before they read a project's config:
-Claude Code needs the project trusted in `~/.claude.json` before it honours
-`.claude/settings.local.json`, and Codex needs
-`[projects."<repo>"] trust_level = "trusted"` in `~/.codex/config.toml`.
-`dots agents sync` warns about both and never adds a trust entry.
+Both agents require trust before they read a project's config. For Codex,
+`dots agents sync` adds `[projects."<main repo>"] trust_level = "trusted"` to
+`~/.codex/config.toml` (trust on the main repo covers its worktrees), unless an
+entry for that path already exists. Claude Code needs the project trusted in
+`~/.claude.json` before it honours `.claude/settings.local.json`; the sync only
+warns about that.
+
+mise refuses an untrusted `mise.toml` and then breaks every shim (including
+`opencode`) in that repo. The global mise config trusts `~/code`, `~/Code` and
+`~/.t3/worktrees` (`trusted_config_paths`).

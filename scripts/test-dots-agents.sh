@@ -389,10 +389,23 @@ git -C "$REPO" worktree add -q "$WT" -b wt-test
 # In a real repo .mcp.json is committed, so the worktree has it too.
 cp "$REPO/.mcp.json" "$WT/.mcp.json"
 
-# Nothing trusted: both agents warn.
+# Nothing trusted: the sync trusts the main repo for Codex (that covers the
+# worktree) and only warns for Claude. The main repo's own sync above already
+# added its entry, so drop it first.
+awk -v target="[projects.\"$REPO\"]" '
+  $0 == target { skipping = 1; next }
+  skipping && /^\[/ { skipping = 0 }
+  !skipping { print }
+' "$HOME/.codex/config.toml" > "$TMPROOT/codex.toml"
+mv "$TMPROOT/codex.toml" "$HOME/.codex/config.toml"
 run_dots "$WT" sync --project-only
 eq "untrusted worktree status" "0" "$STATUS"
-contains "Codex ignores .codex/config.toml" "$OUT" "untrusted worktree codex warning"
+contains "codex: trusted" "$OUT" "worktree sync trusts the main repo"
+eq "codex trust entry once" "1" \
+  "$(grep -cxF "[projects.\"$REPO\"]" "$HOME/.codex/config.toml")"
+run_dots "$WT" sync --project-only
+eq "codex trust entry still once" "1" \
+  "$(grep -cxF "[projects.\"$REPO\"]" "$HOME/.codex/config.toml")"
 contains "Claude shows .mcp.json servers as pending" "$OUT" \
   "untrusted worktree claude warning"
 [ -f "$WT/.codex/config.toml" ] || fail "no worktree .codex/config.toml"
@@ -400,8 +413,6 @@ contains "Claude shows .mcp.json servers as pending" "$OUT" \
 eq "worktree exclude once" "1" "$(exclude_count "$REPO" ".codex/config.toml")"
 
 # Trust the main worktree only: the linked worktree must accept it.
-printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$REPO" \
-  >> "$HOME/.codex/config.toml"
 jq -n --arg p "$REPO" '{projects:{($p):{hasTrustDialogAccepted:true}}}' \
   > "$HOME/.claude.json"
 chmod 600 "$HOME/.claude.json"
@@ -433,6 +444,21 @@ not_contains "Codex ignores .codex/config.toml" "$OUT" \
   "ancestor-trusted worktree codex warning"
 not_contains "Claude shows .mcp.json servers as pending" "$OUT" \
   "ancestor-trusted worktree claude warning"
+
+# An entry the user wrote (here "untrusted") is respected: warn, no append.
+# Drop the ancestor trust from the case above first.
+awk -v target="[projects.\"$TMPROOT\"]" '
+  $0 == target { skipping = 1; next }
+  skipping && /^\[/ { skipping = 0 }
+  !skipping { print }
+' "$HOME/.codex/config.toml" > "$TMPROOT/codex.toml"
+mv "$TMPROOT/codex.toml" "$HOME/.codex/config.toml"
+printf '[projects."%s"]\ntrust_level = "untrusted"\n' "$REPO" \
+  >> "$HOME/.codex/config.toml"
+run_dots "$WT" sync --project-only
+contains "Codex does not trust" "$OUT" "explicit codex entry respected"
+eq "explicit codex entry not duplicated" "1" \
+  "$(grep -cxF "[projects.\"$REPO\"]" "$HOME/.codex/config.toml")"
 
 # ── empty client reference fails only that server ──────────────────────────
 cat > "$AGENTS_CFG/shovel/mcp.json" <<'JSON'
