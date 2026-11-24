@@ -734,7 +734,7 @@ agents_resolve_client_map() { # context map-file dest
   err="$AGENTS_TMP/context-$context.err"
   entries="$AGENTS_TMP/client.entries"
   : > "$entries"
-  if ! ( umask 077; "$runner" --ctx "$context" -- jq -nc 'env' > "$values" 2>"$err" ); then
+  if ! ( umask 077; "$runner" run --ctx "$context" -- jq -nc 'env' > "$values" 2>"$err" ); then
     fail "agents: context $context: could not load secrets ($(agents_error_text "$err"))"
     printf '{}\n' > "$dest"
     return 0

@@ -102,6 +102,9 @@ chmod +x "$FAKEBIN/npx"
 
 cat > "$SECRET_RUN" <<'FAKE'
 #!/usr/bin/env bash
+# Same call shape as the real CLI: dots-secret run --ctx NAME -- CMD...
+[[ "${1:-}" == run ]] || { echo "fake dots-secret: expected 'run', got '${1:-}'" >&2; exit 2; }
+shift
 ctx=""
 while (($#)); do
   case "$1" in
