@@ -7,7 +7,6 @@
     "clangd-lsp@claude-plugins-official": true,
     "cloudflare@cloudflare": true,
     "codex@openai-codex": true,
-    "mattpocock-skills@claude-plugins-official": true,
     "plannotator@plannotator": true,
     "pstack@pstack-claude": true,
     "pyright-lsp@claude-plugins-official": true,

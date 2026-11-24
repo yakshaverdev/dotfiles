@@ -1,0 +1,13 @@
+# Global plugins for Codex and OpenCode.
+#
+# Format: one entry per line, <agent> <plugin-id> <source>.
+#   agent      codex or opencode
+#   plugin-id  id reported by the agent's plugin list (also the Codex
+#              plugin@marketplace selector)
+#   source     argument of the install command: the Codex marketplace
+#              source, or the OpenCode package specifier
+# Lines starting with # are comments. Claude Code plugins live in
+# stow/common/claude/.claude/settings.json instead.
+
+codex pstack@pstack-claude michael-denyer/pstack-claude
+opencode pstack github:michael-denyer/pstack-claude#main

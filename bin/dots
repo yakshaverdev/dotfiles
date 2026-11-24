@@ -39,6 +39,10 @@ BACKUP_USED=0
 FAILURES=()
 MANUAL=()
 
+AGENT_SKILLS_MANIFEST="$DOTFILES/packages/agent-skills"
+AGENT_PLUGINS_MANIFEST="$DOTFILES/packages/agent-plugins"
+SKILL_LOCK="$HOME/.agents/.skill-lock.json"
+
 # ── Small helpers ──────────────────────────────────────────────────────────
 info() { printf '%s\n' "$*"; }
 warn() { printf 'WARN: %s\n' "$*" >&2; }
@@ -83,6 +87,17 @@ mise_bin() {
     command -v mise
   elif [[ -x "$HOME/.local/bin/mise" ]]; then
     printf '%s\n' "$HOME/.local/bin/mise"
+  else
+    return 1
+  fi
+}
+
+# Codex may arrive as the macOS app only, with no `codex` on PATH.
+codex_bin() {
+  if have codex; then
+    command -v codex
+  elif [[ -x /Applications/Codex.app/Contents/Resources/codex ]]; then
+    printf '%s\n' /Applications/Codex.app/Contents/Resources/codex
   else
     return 1
   fi
@@ -379,6 +394,10 @@ cmd_install() {
   else
     fail "mise not available"
   fi
+
+  # 8a. Agent skills and plugins (non-fatal)
+  info "→ Agent skills and plugins..."
+  cmd_skills sync || fail "dots skills sync"
 
   # 9. bat cache + git hooks
   if have bat; then
@@ -768,6 +787,297 @@ cmd_upgrade() {
   info "push, then run 'dots install' on the other machine."
 }
 
+# ── skills ─────────────────────────────────────────────────────────────────
+# Global third-party skills live in packages/agent-skills, global agent plugins
+# in packages/agent-plugins. Both manifests track upstream; nothing is pinned.
+
+# Print a manifest's data lines, trimmed, skipping blank and comment lines.
+manifest_rows() {
+  local file="$1" line
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    printf '%s\n' "$line"
+  done < "$file"
+}
+
+# Emit every skill name in packages/agent-skills, one per line.
+manifest_skill_names() {
+  local line names name
+  local -a names_arr=()
+  while IFS= read -r line; do
+    names="${line#* }"
+    [[ "$names" == "$line" ]] && continue
+    names_arr=()
+    IFS=',' read -r -a names_arr <<< "$names"
+    for name in "${names_arr[@]}"; do
+      name="${name//[[:space:]]/}"
+      [[ -n "$name" ]] && printf '%s\n' "$name"
+    done
+  done < <(manifest_rows "$AGENT_SKILLS_MANIFEST")
+}
+
+# Emit "<plugin-id> <source>" for one agent from packages/agent-plugins.
+manifest_plugins_for() {
+  local agent="$1" line entry id source
+  while IFS= read -r line; do
+    [[ "${line%% *}" == "$agent" ]] || continue
+    entry="${line#* }"
+    [[ "$entry" == "$line" ]] && continue
+    id="${entry%% *}"
+    source="${entry#* }"
+    [[ "$source" == "$entry" ]] && source=""
+    printf '%s %s\n' "$id" "$source"
+  done < <(manifest_rows "$AGENT_PLUGINS_MANIFEST")
+}
+
+# Install manifest entries that are not present yet. Safe to rerun.
+skills_sync() {
+  local prune="$1"
+  local source names line name
+  local -a wanted=() missing=() extra_arr=()
+  local name_file extras extra
+
+  info "→ Skills (~/.agents/skills)"
+  if ! have npx || ! have node; then
+    warn "npx/node not found — skipping skills"
+  elif [[ ! -f "$AGENT_SKILLS_MANIFEST" ]]; then
+    warn "$AGENT_SKILLS_MANIFEST not found — skipping skills"
+  else
+    while IFS= read -r line; do
+      source="${line%% *}"
+      names="${line#* }"
+      if [[ "$names" == "$line" ]]; then
+        warn "manifest entry without skills: $line"
+        continue
+      fi
+      wanted=()
+      IFS=',' read -r -a wanted <<< "$names"
+      missing=()
+      for name in "${wanted[@]}"; do
+        name="${name//[[:space:]]/}"
+        [[ -n "$name" ]] || continue
+        [[ -d "$HOME/.agents/skills/$name" ]] || missing+=("$name")
+      done
+      if ((${#missing[@]} == 0)); then
+        info "  $source: up to date"
+        continue
+      fi
+      info "  $source: installing ${#missing[@]} missing skill(s)"
+      # < /dev/null keeps the installer from swallowing the manifest lines
+      # that feed this loop.
+      if npx -y skills@latest add "$source" -g -y -a claude-code codex opencode \
+          -s "${missing[@]}" < /dev/null 2>&1 | sed 's/^/    /'; then
+        wanted=()
+        for name in "${missing[@]}"; do
+          [[ -d "$HOME/.agents/skills/$name" ]] || wanted+=("$name")
+        done
+        if ((${#wanted[@]})); then
+          warn "$source does not provide: ${wanted[*]}"
+          fail "skills missing from $source: ${wanted[*]}"
+        else
+          info "  installed: ${missing[*]}"
+        fi
+      else
+        fail "skills add $source"
+      fi
+    done < <(manifest_rows "$AGENT_SKILLS_MANIFEST")
+
+    # Report lock-file skills the manifest no longer lists. Hand-made folders
+    # are absent from the lock file and are never touched.
+    if [[ -f "$SKILL_LOCK" ]] && have jq; then
+      name_file="$(mktemp)"
+      manifest_skill_names | sort -u > "$name_file"
+      extras="$(jq -r '.skills // {} | keys[]' "$SKILL_LOCK" 2>/dev/null \
+        | while IFS= read -r name; do
+            [[ -n "$name" ]] || continue
+            grep -qxF "$name" "$name_file" || printf '%s\n' "$name"
+          done)"
+      rm -f "$name_file"
+      if [[ -z "$extras" ]]; then
+        info "  no extra global skills"
+      else
+        extra_arr=()
+        while IFS= read -r extra; do
+          [[ -n "$extra" ]] && extra_arr+=("$extra")
+        done <<< "$extras"
+        info "  extra global skills not in the manifest:"
+        printf '%s\n' "$extras" | sed 's/^/    /'
+        if ((prune)); then
+          info "  pruning extras..."
+          if npx -y skills@latest remove -g -y "${extra_arr[@]}" \
+               < /dev/null 2>&1 | sed 's/^/    /'; then
+            info "  removed extras"
+          else
+            fail "skills remove extras"
+          fi
+        else
+          info "  run 'dots skills sync --prune' to remove them"
+        fi
+      fi
+    fi
+  fi
+
+  skills_sync_plugins
+}
+
+# Install whichever agent plugins from packages/agent-plugins are missing.
+skills_sync_plugins() {
+  local entry id source codex mkt
+
+  info "→ Plugins"
+  if [[ ! -f "$AGENT_PLUGINS_MANIFEST" ]]; then
+    warn "$AGENT_PLUGINS_MANIFEST not found — skipping plugins"
+    return 0
+  fi
+
+  if codex="$(codex_bin)"; then
+    while IFS= read -r entry; do
+      [[ -n "$entry" ]] || continue
+      id="${entry%% *}"
+      source="${entry#* }"
+      if [[ "$source" == "$entry" || -z "$source" ]]; then
+        warn "plugin entry without source: $entry"
+        continue
+      fi
+      mkt="${id#*@}"
+      if "$codex" plugin list < /dev/null 2>/dev/null \
+          | awk -v id="$id" '$1 == id && $2 ~ /installed/ { found = 1 } END { exit !found }'; then
+        info "  codex: $id installed"
+        continue
+      fi
+      if ! "$codex" plugin marketplace list < /dev/null 2>/dev/null \
+          | awk -v m="$mkt" '$1 == m { found = 1 } END { exit !found }'; then
+        info "  codex: adding marketplace $mkt"
+        if ! "$codex" plugin marketplace add "$source" < /dev/null 2>&1 | sed 's/^/    /'; then
+          fail "codex marketplace add $mkt"
+          continue
+        fi
+      fi
+      info "  codex: installing $id"
+      if "$codex" plugin add "$id" < /dev/null 2>&1 | sed 's/^/    /'; then
+        info "  Codex: open an interactive session and run /hooks once to trust the pstack hook"
+      else
+        fail "codex plugin add $id"
+      fi
+    done < <(manifest_plugins_for codex)
+  else
+    warn "codex CLI not found — skipping Codex plugins"
+  fi
+
+  if have opencode; then
+    while IFS= read -r entry; do
+      [[ -n "$entry" ]] || continue
+      id="${entry%% *}"
+      source="${entry#* }"
+      if [[ "$source" == "$entry" || -z "$source" ]]; then
+        warn "plugin entry without source: $entry"
+        continue
+      fi
+      if opencode plugin list < /dev/null 2>/dev/null \
+          | awk -v id="$id" '$1 == id { found = 1 } END { exit !found }'; then
+        info "  opencode: $id installed"
+        continue
+      fi
+      info "  opencode: installing $id"
+      if opencode plugin add "$source" < /dev/null 2>&1 | sed 's/^/    /'; then
+        info "  opencode: restart the service to load $id"
+      else
+        fail "opencode plugin add $id"
+      fi
+    done < <(manifest_plugins_for opencode)
+  else
+    warn "opencode not found — skipping OpenCode plugins"
+  fi
+}
+
+# Refresh every skill and plugin source to its newest release. Each step is
+# independent, so one failing source does not stop the rest.
+skills_upgrade() {
+  local codex mkt p
+
+  info "→ Skills"
+  if have npx && have node; then
+    if npx -y skills@latest update -g -y < /dev/null 2>&1 | sed 's/^/  /'; then
+      info "  skills updated"
+    else
+      fail "skills update"
+    fi
+  else
+    warn "npx/node not found — skipping skills update"
+  fi
+
+  info "→ Claude Code plugins"
+  if have claude && have jq && [[ -f "$HOME/.claude/settings.json" ]]; then
+    if claude plugin marketplace update < /dev/null 2>&1 | sed 's/^/  /'; then
+      info "  marketplaces updated"
+    else
+      fail "claude plugin marketplace update"
+    fi
+    while IFS= read -r p; do
+      [[ -n "$p" ]] || continue
+      info "  claude plugin update $p"
+      if ! claude plugin update "$p" < /dev/null 2>&1 | sed 's/^/    /'; then
+        fail "claude plugin update $p"
+      fi
+    done < <(jq -r '.enabledPlugins // {} | keys[]' "$HOME/.claude/settings.json" 2>/dev/null)
+  else
+    warn "claude, jq, or ~/.claude/settings.json missing — skipping Claude Code plugins"
+  fi
+
+  info "→ Codex plugins"
+  if codex="$(codex_bin)"; then
+    while IFS= read -r mkt; do
+      [[ -n "$mkt" ]] || continue
+      info "  codex marketplace upgrade $mkt"
+      if ! "$codex" plugin marketplace upgrade "$mkt" < /dev/null 2>&1 | sed 's/^/    /'; then
+        fail "codex marketplace upgrade $mkt"
+      fi
+    done < <(manifest_plugins_for codex | awk '{ sub(/^[^@]*@/, "", $1); print $1 }' | sort -u)
+  else
+    warn "codex CLI not found — skipping Codex plugins"
+  fi
+
+  info "→ OpenCode plugins"
+  if have opencode; then
+    if opencode plugin update < /dev/null 2>&1 | sed 's/^/  /'; then
+      info "  plugins updated"
+    else
+      fail "opencode plugin update"
+    fi
+  else
+    warn "opencode not found — skipping OpenCode plugins"
+  fi
+}
+
+cmd_skills() {
+  local action="sync" prune=0 failures_before i
+  failures_before=${#FAILURES[@]}
+  while (($#)); do
+    case "$1" in
+      sync|upgrade) action="$1" ;;
+      --prune) prune=1 ;;
+      -h|--help) info "usage: dots skills [sync|upgrade] [--prune]"; return 0 ;;
+      *) err "usage: dots skills [sync|upgrade] [--prune]"; return 1 ;;
+    esac
+    shift
+  done
+  info "=== dots skills (${action}) ==="
+  case "$action" in
+    sync) skills_sync "$prune" ;;
+    upgrade) skills_upgrade ;;
+  esac
+  # `fail` only records, so a standalone run must print the reasons here.
+  if ((${#FAILURES[@]} > failures_before)); then
+    warn "skills ${action} had ${#FAILURES[@]} failure(s):"
+    for ((i = failures_before; i < ${#FAILURES[@]}; i++)); do
+      info "  - ${FAILURES[i]}"
+    done
+  fi
+}
+
 # ── main ───────────────────────────────────────────────────────────────────
 usage() {
   cat <<EOF
@@ -780,6 +1090,9 @@ Commands:
   t3 push   Apply repo T3 Code settings to the live app
   t3 diff   Show differences between live and tracked T3 settings
   upgrade TOOL...  Bump mise tools to their newest release (both platforms)
+  skills [sync|upgrade] [--prune]
+            Sync global agent skills and plugins (default sync) or upgrade
+            them; --prune removes skills no longer in the manifest
   secret    Manage env vars / API keys (set, get, ls, rm, sync, import,
             reload, doctor)
 EOF
@@ -790,6 +1103,7 @@ case "${1:-}" in
   doctor)  cmd_doctor ;;
   t3)      shift; cmd_t3 "${1:-}" ;;
   upgrade) shift; cmd_upgrade "$@" ;;
+  skills)  shift; cmd_skills "$@" ;;
   secret)  shift; exec "$DOTFILES/bin/dots-secret" "$@" ;;
   -h|--help|help|"") usage ;;
   *) err "unknown command: $1"; usage; exit 1 ;;

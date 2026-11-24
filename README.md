@@ -33,6 +33,8 @@ config/hosts            # machine → ssh target for peer secret sync
 hooks/pre-commit        # gitleaks secret scan
 packages/Brewfile       # macOS packages
 packages/apt.txt        # Linux packages (one per line, # comments)
+packages/agent-skills   # global third-party skills for the agent CLIs
+packages/agent-plugins  # native Codex and OpenCode plugins
 scripts/macos-defaults.sh
 themes/tokyo-night-storm/palette.sh
 wallpapers/generate.sh  # regenerates the (gitignored) PNGs
@@ -60,6 +62,7 @@ stow --no-folding -d "$DOTFILES/stow/<group>" -t "$HOME" <pkg>
 | `dots t3 pull` | Copy live T3 Code settings into `t3/` |
 | `dots t3 push` | Apply `t3/` settings to the live T3 Code install |
 | `dots t3 diff` | Diff live vs tracked T3 settings |
+| `dots skills [sync\|upgrade] [--prune]` | Install missing global agent skills/plugins, or upgrade them; `--prune` drops skills no longer in the manifest |
 | `dots secret <cmd>` | Env vars / API keys: `set`, `get`, `ls`, `rm`, `sync`, `import`, `ctx`, `run`, `reload`, `doctor` |
 | `dots secret --ctx NAME <cmd>` | Same commands against a client context project |
 
@@ -113,6 +116,29 @@ OpenCode comes from mise on both machines; `dots install` sets
 not replace the mise binary. Anything that is not
 available through mise (GUI apps, system daemons) belongs in `packages/Brewfile`
 or `packages/apt.txt` instead.
+
+## Agent skills
+
+Global third-party skills for Claude Code, Codex and OpenCode are listed in
+`packages/agent-skills`, one `<source> <skill>,<skill>,...` line per source.
+Native Codex and OpenCode plugins are listed in `packages/agent-plugins`, one
+`<agent> <plugin-id> <source>` line each. Versions are never pinned.
+
+- `dots skills` (or `dots skills sync`) installs only the missing skills and
+  plugins, then lists installed skills the manifest no longer contains.
+- `dots skills sync --prune` removes those extras. Skills that are not in
+  `~/.agents/.skill-lock.json` (hand-made folders) are never touched.
+- `dots skills upgrade` updates every skill, marketplace and plugin to its
+  newest release.
+
+`dots install` runs `dots skills sync` after `mise install`. Codex needs a
+one-time hook trust: run `/hooks` in an interactive session. Claude Code
+plugins stay in `stow/common/claude/.claude/settings.json`; the
+`pstack-models.md` sheets stowed from `stow/common/codex` and
+`stow/common/opencode` turn pstack's routing hook off there.
+
+Project-specific skills belong in each project's own repo, not in this
+manifest.
 
 ## Supply-chain cooldown
 

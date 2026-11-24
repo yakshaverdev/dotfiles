@@ -1,0 +1,13 @@
+# Global third-party skills shared by Claude Code, Codex and OpenCode.
+#
+# Format: one entry per line, <source> <comma-separated skill names>.
+# `dots skills` installs the missing names into ~/.agents/skills and links
+# them into every agent. Lines starting with # are comments.
+#
+# Project-specific skills belong in each project's own repo, not here.
+
+mattpocock/skills prototype,ask-matt,code-review,codebase-design,diagnosing-bugs,domain-modeling,grill-me,grill-with-docs,grilling,handoff,implement,implement-spec,improve-codebase-architecture,pr,research,retro,setup-matt-pocock-skills,tdd,teach,to-questionnaire,to-spec,to-tickets,triage,wait-what,wayfinder,wizard,writing-for-agents,chief-of-staff,claude-handoff,git-guardrails-claude-code,loop-me,scaffold-exercises,setup-pre-commit,writing-shape,writing-fragments,writing-beats
+emilkowalski/skill animate,animate-expo,animation-performance,animation-vocabulary,apple-design,ask-sonner,break-ui,emil-design-eng,find-animation-opportunities,improve-animations,mobile-native,pick-ui-library,review-animations,write-swift
+Leonxlnx/taste-skill design-taste-frontend
+Leonxlnx/taste-skill-classics high-end-visual-design,industrial-brutalist-ui,minimalist-ui,stitch-design-taste
+vercel-labs/skills find-skills
