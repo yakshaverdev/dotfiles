@@ -5,8 +5,8 @@ set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DOTS="$ROOT/bin/dots"
 
-# shellcheck source=/dev/null
-source <(sed -n '/^# BEGIN version_ge$/,/^# END version_ge$/p' "$DOTS")
+# eval, not source <(...): macOS bash 3.2 cannot source a process substitution.
+eval "$(sed -n '/^# BEGIN version_ge$/,/^# END version_ge$/p' "$DOTS")"
 
 if ! declare -F version_ge >/dev/null; then
   printf 'FAIL: version_ge not found in %s\n' "$DOTS" >&2
