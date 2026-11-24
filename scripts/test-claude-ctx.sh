@@ -304,4 +304,12 @@ PROC
   esac
 fi
 
+# 17. Relaunch args keep option values and drop only the prompt.
+eval "$(sed -n '/^build_relaunch_args()/,/^}/p' "$CTX")"
+relaunch() { build_relaunch_args "$@"; printf '%s|' "${RELAUNCH_ARGS[@]}"; }
+eq "relaunch keeps --model value" "--model|opus|" "$(relaunch --model opus)"
+eq "relaunch drops prompt" "--model|opus|" "$(relaunch --model opus "fix it")"
+eq "relaunch drops resume" "--model=opus|" "$(relaunch --resume abc --model=opus hi)"
+eq "relaunch stops at --" "--verbose|" "$(relaunch --verbose -- "a prompt")"
+
 printf 'ok: all claude-ctx tests passed\n'

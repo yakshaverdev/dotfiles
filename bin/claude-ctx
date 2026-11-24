@@ -299,28 +299,17 @@ choose_account() { # [log-only]
 }
 
 # Relaunch args: the original args minus -c/--continue, -r/--resume and
-# --session-id (with their values) and a trailing positional prompt.
+# --session-id (with their values) and the positional prompt.
 build_relaunch_args() { # sets RELAUNCH_ARGS
-  # shortcut: drops only a trailing positional prompt; flags whose value looks like a prompt may be misread. Upgrade if relaunch args go wrong.
+  # shortcut: variadic flags (--add-dir, --allowedTools, --mcp-config ...) keep only one value; extra values read as the prompt. Pass them as --flag=a,b or before the prompt with -- if that matters.
   local -a src=("$@")
-  local n=$# i=0 a next drop_last=0
+  local n=$# i=0 a next
   RELAUNCH_ARGS=()
-  if [ "$n" -gt 0 ]; then
-    case "${src[$((n - 1))]}" in
-      -*) drop_last=0 ;;
-      *) drop_last=1 ;;
-    esac
-  fi
   while [ "$i" -lt "$n" ]; do
-    if [ "$drop_last" = 1 ] && [ "$i" -eq "$((n - 1))" ]; then
-      break
-    fi
     a="${src[$i]}"
     case "$a" in
-      -c|--continue)
-        i=$((i + 1))
-        continue
-        ;;
+      --) break ;;
+      -c|--continue) i=$((i + 1)); continue ;;
       -r|--resume)
         next="${src[$((i + 1))]:-}"
         if [ -n "$next" ] && [ "${next#-}" = "$next" ]; then
@@ -330,12 +319,21 @@ build_relaunch_args() { # sets RELAUNCH_ARGS
         fi
         continue
         ;;
-      --session-id)
+      --session-id) i=$((i + 2)); continue ;;
+      --model|--fallback-model|--permission-mode|--effort|--agent|--agents|\
+      --settings|--setting-sources|--append-system-prompt|--system-prompt|\
+      --append-system-prompt-file|--system-prompt-file|--output-format|\
+      --input-format|--json-schema|--max-turns|--max-budget-usd|--name|-n|\
+      --add-dir|--allowedTools|--allowed-tools|--disallowedTools|\
+      --disallowed-tools|--tools|--mcp-config|--plugin-dir|--betas|\
+      --permission-prompt-tool|--debug-file)
+        RELAUNCH_ARGS+=("$a")
+        if [ $((i + 1)) -lt "$n" ]; then RELAUNCH_ARGS+=("${src[$((i + 1))]}"); fi
         i=$((i + 2))
         continue
         ;;
+      -*) RELAUNCH_ARGS+=("$a") ;;
     esac
-    RELAUNCH_ARGS+=("$a")
     i=$((i + 1))
   done
 }
