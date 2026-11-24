@@ -1,0 +1,39 @@
+{
+  "mcpServers": {
+    "skit-india": {
+      "type": "http",
+      "url": "https://mcp.skit.ai/metamcp/local-india/mcp",
+      "headers": {
+        "Authorization": "Bearer ${SKIT_MCP_TOKEN}"
+      }
+    },
+    "skit-us": {
+      "type": "http",
+      "url": "https://mcp.skit.ai/metamcp/local-us/mcp",
+      "headers": {
+        "Authorization": "Bearer ${SKIT_MCP_TOKEN}"
+      }
+    },
+    "skit-canada": {
+      "type": "http",
+      "url": "https://mcp.skit.ai/metamcp/local-canada/mcp",
+      "headers": {
+        "Authorization": "Bearer ${SKIT_MCP_TOKEN}"
+      }
+    },
+    "skit-pm": {
+      "type": "http",
+      "url": "https://mcp.skit.ai/metamcp/project-management/mcp",
+      "headers": {
+        "Authorization": "Bearer ${SKIT_MCP_TOKEN}"
+      }
+    },
+    "vorflux": {
+      "type": "http",
+      "url": "https://us1.vorflux.com/api/v1/mcp",
+      "headers": {
+        "Authorization": "Bearer ${VORFLUX_MCP_TOKEN}"
+      }
+    }
+  }
+}
