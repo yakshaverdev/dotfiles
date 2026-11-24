@@ -6,7 +6,8 @@
 #   Authorization: Bearer ${VAR}  -> bearer_token_env_var
 #   <Header>: ${VAR}              -> env_http_headers
 #   literal header                -> http_headers
-#   env value ${VAR}              -> env_vars
+#   env value ${VAR}              -> env_vars, only when the key is VAR, because
+#                                    Codex forwards a variable by its own name
 #   literal env value             -> [mcp_servers.<name>.env]
 # Anything else that mixes a literal and a reference fails this one server.
 def hasref:
@@ -85,7 +86,11 @@ elif ((.command // "") | length) > 0 then
         ({env: {}, env_vars: [], bad: null};
          $e.value as $v
          | if ($v | test("^\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}$"))
-           then .env_vars += [$v | refname]
+           then ($v | refname) as $r
+             | if $r == $e.key
+               then .env_vars += [$r]
+               else .bad = "env \($e.key) renames \($v); Codex can only pass a variable under its own name"
+               end
            elif ($v | hasref)
            then .bad = "env \($e.key) mixes a literal and a ${...} reference"
            else .env[$e.key] = $v

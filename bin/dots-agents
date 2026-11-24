@@ -127,6 +127,8 @@ agents_stale_json() {
     '$prev - $desired'
 }
 
+# Stored names for a key. A legacy key holds a plain array; a key written by
+# agents_state_put_hashes holds {names, hashes}.
 agents_state_get() {
   local file
   file="$(agents_state_file)"
@@ -134,7 +136,39 @@ agents_state_get() {
     printf '[]\n'
     return 0
   fi
-  jq -c --arg k "$1" '(.targets[$k] // [])' "$file" 2>/dev/null || printf '[]\n'
+  jq -c --arg k "$1" '
+    (.targets[$k] // []) as $v
+    | if ($v | type) == "array" then $v
+      elif ($v | type) == "object" then ($v.names // [])
+      else [] end
+  ' "$file" 2>/dev/null || printf '[]\n'
+}
+
+# Known content hashes for a key as {name: sha256}. A legacy array has none,
+# which makes the next sync re-apply every server once.
+agents_state_hashes() {
+  local file
+  file="$(agents_state_file)"
+  if [[ ! -f "$file" ]]; then
+    printf '{}\n'
+    return 0
+  fi
+  jq -c --arg k "$1" '
+    (.targets[$k] // []) as $v
+    | (if ($v | type) == "object" then ($v.hashes // {}) else {} end)
+    | with_entries(select((.value | type) == "string"))
+  ' "$file" 2>/dev/null || printf '{}\n'
+}
+
+# sha256 of a file's bytes. The Mac usually has shasum, not sha256sum.
+agents_sha256() { # file
+  if have sha256sum; then
+    sha256sum "$1" | awk '{ print $1 }'
+  elif have shasum; then
+    shasum -a 256 "$1" | awk '{ print $1 }'
+  else
+    return 1
+  fi
 }
 
 agents_state_put() { # key names-lines-file
@@ -151,6 +185,38 @@ agents_state_put() { # key names-lines-file
         .version = 1
         | .targets = (.targets // {})
         | .targets[$k] = ($n | split("\n") | map(select(length > 0)) | unique)
+      ' "$file" > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if cmp -s "$file" "$tmp"; then
+    rm -f "$tmp"
+  else
+    mv -f "$tmp" "$file"
+  fi
+  return 0
+}
+
+# Store names with the sha256 of each applied translation, never the JSON
+# itself (it can hold resolved secrets). Legacy arrays for the same key read
+# back as names with unknown hashes.
+agents_state_put_hashes() { # key names-lines-file hashes-json
+  local file key dir tmp
+  file="$(agents_state_file)"
+  key="$1"
+  dir="$(dirname "$file")"
+  mkdir -p "$dir"
+  if [[ ! -f "$file" ]]; then
+    printf '{"version":1,"targets":{}}\n' > "$file"
+  fi
+  tmp="$(mktemp "$dir/.agents-sync.XXXXXX")"
+  if ! jq --arg k "$key" --rawfile n "$2" --argjson h "$3" '
+        .version = 1
+        | .targets = (.targets // {})
+        | .targets[$k] = {
+            names: ($n | split("\n") | map(select(length > 0)) | unique),
+            hashes: $h
+          }
       ' "$file" > "$tmp"; then
     rm -f "$tmp"
     return 1
@@ -340,10 +406,13 @@ agents_apply_claude_scope() { # state-key scope cwd map-file
   local tag="claude ($scope)" skey
   skey="$(agents_safe_key "$key")"
   local desired="$AGENTS_TMP/$skey.names" ok="$AGENTS_TMP/$skey.ok"
-  local err="$AGENTS_TMP/$skey.err"
-  local n name sfile out prev stale
+  local err="$AGENTS_TMP/$skey.err" changed="$AGENTS_TMP/$skey.changed"
+  local hashes="$AGENTS_TMP/$skey.hashes"
+  local n name sfile out prev prev_hashes stale hash prev_hash hashes_json
   : > "$desired"
   : > "$ok"
+  : > "$changed"
+  : > "$hashes"
   while IFS= read -r n; do
     name="$(jq -r '.key' <<<"$n")"
     sfile="$AGENTS_TMP/$skey.$name.server"
@@ -359,6 +428,7 @@ agents_apply_claude_scope() { # state-key scope cwd map-file
   done < <(jq -c 'to_entries[]' "$map")
 
   prev="$(agents_state_get "$key")"
+  prev_hashes="$(agents_state_hashes "$key")"
   stale="$(agents_stale_json "$prev" "$desired")"
 
   while IFS= read -r name; do
@@ -366,17 +436,44 @@ agents_apply_claude_scope() { # state-key scope cwd map-file
     agents_claude_remove "$dir" "$scope" "$name"
   done < <(jq -r '.[]' <<<"$stale")
 
+  # A server whose translation is unchanged since the last sync keeps its CLI
+  # entry, so its bearer token does not pass through argv again.
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
+    hash="$(agents_sha256 "$AGENTS_TMP/$skey.$name.json" 2>/dev/null || true)"
+    if [[ -n "$hash" ]]; then
+      jq -nc --arg n "$name" --arg h "$hash" '{key:$n,value:$h}' >> "$hashes"
+    fi
+    prev_hash="$(jq -r --arg n "$name" '.[$n] // ""' <<<"$prev_hashes")"
+    if [[ -n "$hash" && -n "$prev_hash" && "$hash" == "$prev_hash" ]] \
+        && jq -e --arg n "$name" 'index($n) != null' <<<"$prev" >/dev/null; then
+      printf '%s\n' "$name" >> "$ok"
+    else
+      printf '%s\n' "$name" >> "$changed"
+    fi
+  done < <(sort -u "$desired")
+
+  while IFS= read -r name <&3; do
+    [[ -n "$name" ]] || continue
+    # Remove before add so a leftover CLI entry cannot block the new one.
+    # shortcut: a failed add after remove leaves the server missing until the
+    # next sync; upgrade by writing ~/.claude.json directly.
     agents_claude_remove "$dir" "$scope" "$name"
     if agents_claude_add "$dir" "$scope" "$name" "$AGENTS_TMP/$skey.$name.json"; then
       printf '%s\n' "$name" >> "$ok"
     else
       fail "agents: $tag $name: add-json failed"
     fi
-  done < <(sort -u "$desired")
+  done 3< "$changed"
 
-  if ! agents_state_put "$key" "$ok"; then
+  # Keep hashes only for servers that are applied now.
+  hashes_json="$(jq -s --rawfile ok "$ok" '
+    ($ok | split("\n") | map(select(length > 0))) as $names
+    | map(select(.key as $k | $names | index($k) != null))
+    | from_entries
+  ' "$hashes" 2>/dev/null || printf '{}\n')"
+
+  if ! agents_state_put_hashes "$key" "$ok" "$hashes_json"; then
     fail "agents: could not write $(agents_display_path "$(agents_state_file)")"
   fi
   # Local scope holds resolved client values in Claude's private config file.
@@ -606,7 +703,7 @@ agents_codex_cli_can() { # normalized-json-file
 
 agents_codex_cli_add() { # codex-bin name normalized-json-file
   local codex="$1" name="$2" norm="$3" kind url bearer entry
-  local -a args=() envs=() cmd=()
+  local -a args=() cmd=()
   kind="$(jq -r '.kind' "$norm")"
   args=(mcp add "$name")
   if [[ "$kind" == "http" ]]; then
@@ -617,17 +714,16 @@ agents_codex_cli_add() { # codex-bin name normalized-json-file
       args+=(--bearer-token-env-var "$bearer")
     fi
   else
-    while IFS= read -r entry; do
-      [[ -n "$entry" ]] && envs+=("$entry")
-    done < <(jq -r '(.env // {}) | to_entries[] | "\(.key)=\(.value)"' "$norm")
-    if (( ${#envs[@]} )); then
-      for entry in "${envs[@]}"; do
-        args+=(--env "$entry")
-      done
+    # NUL-delimited so empty arguments and newlines in arguments survive.
+    while IFS= read -r -d '' entry; do
+      args+=(--env "$entry")
+    done < <(jq -j '(.env // {}) | to_entries[] | "\(.key)=\(.value)\u0000"' "$norm")
+    while IFS= read -r -d '' entry; do
+      cmd+=("$entry")
+    done < <(jq -j '(.command, (.args // [])[]) | ., "\u0000"' "$norm")
+    if (( ${#cmd[@]} == 0 )) || [[ -z "${cmd[0]}" ]]; then
+      return 1
     fi
-    while IFS= read -r entry; do
-      [[ -n "$entry" ]] && cmd+=("$entry")
-    done < <(jq -r '.command, (.args // [])[]' "$norm")
     args+=(-- "${cmd[@]}")
   fi
   "$codex" "${args[@]}" >/dev/null 2>&1
