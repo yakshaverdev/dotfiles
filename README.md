@@ -22,6 +22,30 @@ cp .env.example ~/.env && $EDITOR ~/.env   # git identity only
 `stow jq` on macOS; `stow jq git curl` via apt on Linux), then hands off to
 `dots install`.
 
+## First run
+
+`bootstrap` installs the minimum prerequisites and then runs `dots install`.
+Some tools have their own installers. Use the check column to confirm each
+step.
+
+| Prerequisite | Installed by | Completion check |
+|---|---|---|
+| `~/.env` with `GIT_USER_NAME` and `GIT_USER_EMAIL` | The user: `cp .env.example ~/.env`, then edit it | `test -f ~/.env`, `dots doctor` |
+| Xcode Command Line Tools and Homebrew (macOS) | `bootstrap`; `dots install` also installs Homebrew when it is missing | `brew --version` |
+| `stow`, `jq`, `git`, `curl` | `bootstrap` (`brew install stow jq` on macOS; `apt-get install` on Linux) | `dots doctor`, `jq --version`, `curl --version` |
+| OS packages | `dots install` (`brew bundle` on macOS; `apt-get` on Linux) | `dots doctor` |
+| mise and its tools, including `opencode` and `gh` | `dots install` | `dots doctor`, `opencode --version` |
+| zsh as the login shell | `dots install`. It may print a manual `chsh` command. | `dots doctor` |
+| Claude Code | `dots install` on macOS (the `claude-code@latest` cask); its own installer on Linux | `claude --version` |
+| Codex | Its own installer. `bin/dots` and `bin/dots-agents` also check `~/.local/bin/codex` and, on macOS, `/Applications/Codex.app/Contents/Resources/codex`. | `codex --version` |
+| T3 Code | Its own installer | `test -d "${T3CODE_HOME:-$HOME/.t3}/userdata"` |
+| Infisical machine identity | The user (see [Secrets](#secrets)) | `dots secret doctor` |
+| GitHub login | The user: `gh auth login` | `gh auth status` |
+
+`dots doctor` exits 1 on a problem. It reports a missing `claude`, `codex` or
+`opencode` as a warning, not a failure. After the checks pass, sign in to the
+agent CLIs that you use (see [Manual steps](#manual-steps)).
+
 ## Layout
 
 ```
@@ -71,6 +95,14 @@ stow --no-folding -d "$DOTFILES/stow/<group>" -t "$HOME" <pkg>
 | `dots secret --ctx NAME <cmd>` | Same commands against a client context project |
 
 After the first install, `dots` is on your `PATH` via `~/.local/bin/dots`.
+
+Two guides cover recovery and agent setup:
+
+- [docs/recovery.md](docs/recovery.md) — a failed `dots install`, a bad mise
+  upgrade, a broken shell startup, T3 settings, secrets and MCP sync.
+- [docs/agent-workflow.md](docs/agent-workflow.md) — how terminal Claude,
+  terminal Codex, OpenCode and T3 Code run, plus permissions, delegation and
+  secret scope.
 
 ## CI
 
@@ -410,13 +442,15 @@ credential for one specific target instead of the raw value.
 
 ### Re-provisioning a machine identity
 
-Create a universal-auth identity in Infisical with read access to `dot-env`
-and every client project, then write the file above (mode 600) with the new
-`clientId` / `clientSecret` and the matching `DOT_MACHINE`. Run
-`dots secret sync` (or `dots install`) and `dots secret doctor`. To rotate the
-identity, replace the two `INFISICAL_UA_*` values, delete
-`~/.config/dot/.token`, and grant the new identity member access to the client
-projects.
+Create a universal-auth identity in Infisical. Read access to `dot-env` and
+every client project is enough for `dots secret sync`, `get`, `ls`, `run` and
+`doctor`. `dots secret set`, `rm` and `import` write to Infisical, so they need
+a role with write access to the target project or folder. Then write the file
+above (mode 600) with the new `clientId` / `clientSecret` and the matching
+`DOT_MACHINE`. Run `dots secret sync` (or `dots install`) and
+`dots secret doctor`. To rotate the identity, replace the two `INFISICAL_UA_*`
+values, delete `~/.config/dot/.token`, and give the new identity the same roles
+on the client projects.
 
 ## Agent shells
 
@@ -426,6 +460,12 @@ or `OPENCODE` is set, `~/.zshrc` exports `DOT_AGENT_SHELL=1` and skips the
 tool-replacement aliases (`grep→rg`, `cat→bat`, `ls→eza`, …) and the
 `claude`/`codex` flag wrappers in `agents.zsh`. Agents get plain tools and the
 real CLIs.
+
+Permission default: interactive shells run `claude` with
+`--dangerously-skip-permissions` and `codex` with
+`--dangerously-bypass-approvals-and-sandbox`, and agent-owned shells skip both
+wrappers; see [docs/agent-workflow.md](docs/agent-workflow.md) for each entry
+point.
 
 Machine-local, untracked shell config goes in `~/.config/zsh/local.zsh`.
 
