@@ -151,7 +151,7 @@ bash --norc
 
 Check these files in this order:
 
-1. `~/.zshenv` — read by every zsh, including non-interactive shells. It sets PATH, sets `DOTS_SHIM_DIR`, sources `~/.config/dot/secrets.zsh`, and sources `contexts.zsh` for agent shells.
+1. `~/.zshenv` — read by every zsh, including non-interactive shells. It sets PATH, sets `DOTS_SHIM_DIR`, sources `~/.config/dot/secrets.zsh`, and sources `contexts.zsh` for agent shells and when a context is inherited.
 2. `~/.zprofile` — Homebrew setup on macOS.
 3. `~/.zshrc` — sources `~/.env`, `~/.config/dot/secrets.zsh`, `~/.config/zsh/contexts.zsh`, `common.zsh`, the OS file, `agents.zsh`, `hosts/<host>.zsh`, `local.zsh` and `plugins.zsh`.
 4. `~/.config/zsh/common.zsh`, `agents.zsh`, `contexts.zsh` and `plugins.zsh`.
@@ -193,11 +193,13 @@ The values that the hook already applied stay in the shell. Start the shell in `
 dots secret sync
 ```
 
-A new shell then reads the new file. In the current shell, run:
+A new shell then reads the new file. In the current zsh shell, run:
 
-```bash
-source ~/.config/dot/secrets.zsh
+```zsh
+dots_ctx_reload
 ```
+
+The function unsets the known names, re-reads `~/.config/dot/secrets.zsh` and applies the context for the current directory. It also works inside a strict client context, where sourcing `secrets.zsh` directly would restore personal keys.
 
 ## T3 Code settings
 
@@ -290,11 +292,13 @@ A failed context sync keeps the old files for that context. One broken client do
 
 ### Apply new values
 
-New shells read the new `secrets.zsh`. In the current shell, run:
+New shells read the new `secrets.zsh`. In the current zsh shell, run:
 
-```bash
-source ~/.config/dot/secrets.zsh
+```zsh
+dots_ctx_reload
 ```
+
+The function rebuilds the environment from a clean state and applies the context for the current directory. Do not source `secrets.zsh` directly inside a strict client context: that restores personal keys.
 
 For T3 Code, run:
 

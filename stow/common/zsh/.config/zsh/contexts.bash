@@ -37,7 +37,7 @@ _dots_bash_ctx_apply() {
   if [[ $- == *i* ]]; then
     return 0
   fi
-  _markers="${CLAUDECODE:-}${T3CODE_THREAD_ID:-}${CODEX_THREAD_ID:-}${CODEX_SANDBOX:-}${OPENCODE:-}"
+  _markers="${DOTS_CTX_APPLY:-}${DOT_CTX:-}${DOT_CTX_PIN:-}${CLAUDECODE:-}${T3CODE_THREAD_ID:-}${CODEX_THREAD_ID:-}${CODEX_SANDBOX:-}${OPENCODE:-}"
   if [[ -z $_markers ]]; then
     return 0
   fi
@@ -91,8 +91,10 @@ _dots_bash_ctx_apply() {
     done < "$DOTFILES/config/contexts"
   fi
 
+  # A pinned context wins over the cwd (dots secret run --ctx).
+  _new=${DOT_CTX_PIN:-}
   # Detect: git toplevel → origin URL → first matching glob in file order.
-  if _top=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null); then
+  if [[ -z $_new ]] && _top=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null); then
     if _url=$(git -C "$_top" config --get remote.origin.url 2>/dev/null); then
       for ((_i = 0; _i < ${#_DOTS_BASH_CTX_NAMES[@]}; _i++)); do
         _pats=()
@@ -108,19 +110,22 @@ _dots_bash_ctx_apply() {
       done
     fi
   fi
+  [[ -n $_new ]] || _new=personal
 
   _ctxdir="$HOME/.config/dot/ctx"
   _old=${DOT_CTX:-}
 
-  # Drop an inherited context's names, then restore personal values for any
-  # client context: a merge context may have overridden them (matching the
-  # zsh hook).
-  if [[ -n $_old ]]; then
+  # Rebuild from a clean state, matching the zsh hook: drop the inherited
+  # context's names and the personal names, reload the personal values, then
+  # apply the target. A personal key that the client also set comes back.
+  if [[ -n $_old && $_old != personal ]]; then
     _dots_bash_ctx_unset_names "$_ctxdir/$_old.names"
-    if [[ -r "$HOME/.config/dot/secrets.zsh" ]]; then
-      # shellcheck disable=SC1090,SC1091
-      source "$HOME/.config/dot/secrets.zsh" 2>/dev/null || true
-    fi
+  fi
+  _dots_bash_ctx_unset_names "$HOME/.config/dot/secrets.names"
+  unset DOT_CTX 2>/dev/null || true
+  if [[ -r "$HOME/.config/dot/secrets.zsh" ]]; then
+    # shellcheck disable=SC1090,SC1091
+    source "$HOME/.config/dot/secrets.zsh" 2>/dev/null || true
   fi
 
   if [[ $_new == personal ]]; then

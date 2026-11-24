@@ -312,6 +312,13 @@ eq "relaunch keeps --model value" "--model|opus|" "$(relaunch --model opus)"
 eq "relaunch drops prompt" "--model|opus|" "$(relaunch --model opus "fix it")"
 eq "relaunch drops resume" "--model=opus|" "$(relaunch --resume abc --model=opus hi)"
 eq "relaunch stops at --" "--verbose|" "$(relaunch --verbose -- "a prompt")"
+eq "relaunch keeps every variadic value" \
+  "--disallowedTools|Bash|Edit|--add-dir|/first|/second|" \
+  "$(relaunch --disallowedTools Bash Edit --add-dir /first /second -- task)"
+eq "relaunch variadic stops at --" "--allowedTools|Bash|" \
+  "$(relaunch --allowedTools Bash -- "a prompt")"
+eq "relaunch variadic then more options" "--file|a.png|b.png|--model|opus|" \
+  "$(relaunch --file a.png b.png --model opus hi)"
 
 # 18. A caller with its own endpoint or key gets no subscription token,
 # not even one inherited from a parent claude, and keeps ANTHROPIC_API_KEY.
@@ -347,5 +354,36 @@ NPXB="$TMPROOT/npm/_npx/bbb"
 mkdir -p "$NPXB/node_modules/.bin"
 eq "other npx tool runs claude" "CLAUDE_ACCOUNT=team TOKEN=tok-team LEAK=" \
   "$(PATH="$NPXB/node_modules/.bin:$PATH" run_ctx)"
+
+# 20. A client context sets ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY. The
+# caller-auth decision must come after the context, so claude keeps that key
+# and gets no subscription token.
+reset
+write_secrets
+mkdir -p "$HOME/.config/zsh" "$HOME/.config/dot/ctx"
+cp "$ROOT/stow/common/zsh/.config/zsh/contexts.bash" "$HOME/.config/zsh/contexts.bash"
+cat > "$HOME/.config/dot/ctx/skit.zsh" <<'CTXZ'
+export ANTHROPIC_BASE_URL='https://client.example'
+export ANTHROPIC_API_KEY='client-key'
+CTXZ
+printf 'ANTHROPIC_BASE_URL\nANTHROPIC_API_KEY\n' > "$HOME/.config/dot/ctx/skit.names"
+CTXREPO="$TMPROOT/skit-repo"
+git init -q "$CTXREPO"
+git -C "$CTXREPO" remote add origin 'git@github.com:skit-ai/app.git'
+AUTHBIN="$TMPROOT/authbin"
+mkdir -p "$AUTHBIN"
+cat > "$AUTHBIN/claude" <<'AUTH'
+#!/usr/bin/env bash
+printf 'KEY=%s TOKEN=%s ACCOUNT=%s\n' \
+  "${ANTHROPIC_API_KEY:-}" "${CLAUDE_CODE_OAUTH_TOKEN:-}" "${CLAUDE_ACCOUNT:-}"
+AUTH
+chmod +x "$AUTHBIN/claude"
+out=$(cd "$CTXREPO" && env -u BASH_ENV -u DOT_CTX -u DOT_CTX_PIN \
+  -u CLAUDECODE -u T3CODE_THREAD_ID -u CODEX_THREAD_ID -u CODEX_SANDBOX -u OPENCODE \
+  -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL \
+  HOME="$HOME" DOTFILES="$ROOT" ANTHROPIC_API_KEY=inherited \
+  PATH="$AUTHBIN:$PATH" bash "$CTX" </dev/null 2>/dev/null)
+eq "client context decides caller auth" "KEY=client-key TOKEN= ACCOUNT=" "$out"
+rm -rf "$HOME/.config/zsh" "$HOME/.config/dot/ctx" "$CTXREPO" "$AUTHBIN"
 
 printf 'ok: all claude-ctx tests passed\n'

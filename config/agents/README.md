@@ -12,8 +12,11 @@ Claude Code, Codex and OpenCode. There are three levels:
    `skills-lock.json` restores them.
 3. **Client** — `config/agents/<context>/mcp.json`, where `<context>` is a name
    from `config/contexts`. It applies to repos whose origin matches that
-   context. Client secrets are not in the agent environment, so every `${VAR}`
-   is resolved at sync time and written as a literal value in a mode-600 file.
+   context. Claude gets the client values from `bin/claude-ctx`, which sources
+   `contexts.bash` before it starts Claude. Codex and OpenCode get them in
+   their command shells through `~/.zshenv` or `BASH_ENV`. Client MCP
+   references are still resolved at sync time and written as a literal value
+   in a mode-600 file.
 
 The global and project levels keep `${VAR}` (OpenCode gets `{env:VAR}`, Codex
 gets its native `bearer_token_env_var` / `env_http_headers` / `env_vars`

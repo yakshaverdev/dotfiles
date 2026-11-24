@@ -34,6 +34,11 @@ _dots_ctx_load() {
 _dots_ctx_detect() {
   local dir=${1:-$PWD} top url key pat
   local i
+  # A pinned context wins over the cwd (dots secret run --ctx).
+  if [[ -n ${DOT_CTX_PIN:-} ]]; then
+    REPLY=$DOT_CTX_PIN
+    return 0
+  fi
   top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || top=""
   key=${top:-:none:}
   if (( ${+_dots_ctx_cache[$key]} )); then
@@ -114,16 +119,36 @@ _dots_ctx_apply() {
   return 0
 }
 
+# Rebuild the environment from a clean state: drop the inherited context's
+# names, drop the personal names, reload the personal values, then apply the
+# pinned or cwd context. This keeps a personal key that a client also set.
+_dots_ctx_rebuild() {
+  if [[ -n ${DOT_CTX:-} && ${DOT_CTX} != personal ]]; then
+    _dots_ctx_unset_names "$HOME/.config/dot/ctx/$DOT_CTX.names"
+  fi
+  _dots_ctx_unset_names "$HOME/.config/dot/secrets.names"
+  unset DOT_CTX
+  if [[ -r "$HOME/.config/dot/secrets.zsh" ]]; then
+    source "$HOME/.config/dot/secrets.zsh"
+  fi
+  _dots_ctx_apply
+}
+
+# Reload secrets and the context in the current shell. Safe inside a strict
+# client context, where sourcing secrets.zsh alone would restore personal keys.
+dots_ctx_reload() {
+  _dots_ctx_rebuild
+}
+
 _dots_ctx_load
 autoload -Uz add-zsh-hook
 add-zsh-hook chpwd _dots_ctx_apply
 
-# At load, ~/.zshrc has just sourced the personal secrets.zsh again. A child
-# shell (or a zshrc reload) can inherit DOT_CTX and that context's values, so
-# drop both and apply the context fresh. Otherwise strict mode would see "no
-# change" and leave personal keys visible inside a client repo.
-if [[ -n ${DOT_CTX:-} ]]; then
-  _dots_ctx_unset_names "$HOME/.config/dot/ctx/$DOT_CTX.names"
-  unset DOT_CTX
+# At load, ~/.zshenv (or ~/.zshrc) has just sourced the personal values. A
+# child shell can inherit an old context and its values too. Rebuild so a
+# personal key that the client also set comes back.
+if [[ -n ${DOT_CTX:-} || -n ${DOT_CTX_PIN:-} ]]; then
+  _dots_ctx_rebuild 2>/dev/null
+else
+  _dots_ctx_apply 2>/dev/null
 fi
-_dots_ctx_apply 2>/dev/null

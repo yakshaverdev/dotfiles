@@ -188,13 +188,18 @@ case "$npx_bin" in
     ;;
 esac
 
-# A caller that points claude at its own endpoint or key manages auth itself
-# (decided before the context hook can add values).
-caller_auth=0
-[ -n "${ANTHROPIC_AUTH_TOKEN:-}${ANTHROPIC_BASE_URL:-}" ] && caller_auth=1
-
+# claude-ctx is the agent for this process, so the context hook must apply
+# here even when no agent marker is set. Claude's own children get CLAUDECODE.
+# shellcheck disable=SC2034  # read by contexts.bash
+DOTS_CTX_APPLY=1
 # shellcheck source=/dev/null
 [[ -r "$HOME/.config/zsh/contexts.bash" ]] && source "$HOME/.config/zsh/contexts.bash"
+unset DOTS_CTX_APPLY
+
+# A caller that points claude at its own endpoint or key manages auth itself.
+# The client context can set that endpoint, so decide after the hook runs.
+caller_auth=0
+[ -n "${ANTHROPIC_AUTH_TOKEN:-}${ANTHROPIC_BASE_URL:-}" ] && caller_auth=1
 # Project API credentials are for project tools. Claude itself uses the
 # signed-in subscription, which ANTHROPIC_API_KEY would otherwise override.
 [ "$caller_auth" = 1 ] || unset ANTHROPIC_API_KEY
@@ -323,7 +328,6 @@ choose_account() { # [log-only]
 # Relaunch args: the original args minus -c/--continue, -r/--resume and
 # --session-id (with their values) and the positional prompt.
 build_relaunch_args() { # sets RELAUNCH_ARGS
-  # shortcut: variadic flags (--add-dir, --allowedTools, --mcp-config ...) keep only one value; extra values read as the prompt. Pass them as --flag=a,b or before the prompt with -- if that matters.
   local -a src=("$@")
   local n=$# i=0 a next
   RELAUNCH_ARGS=()
@@ -342,12 +346,26 @@ build_relaunch_args() { # sets RELAUNCH_ARGS
         continue
         ;;
       --session-id) i=$((i + 2)); continue ;;
+      --add-dir|--allowedTools|--allowed-tools|--disallowedTools|\
+      --disallowed-tools|--tools|--mcp-config|--betas|--plugin-dir|--file)
+        # Variadic: keep values until the next option or --.
+        RELAUNCH_ARGS+=("$a")
+        i=$((i + 1))
+        while [ "$i" -lt "$n" ]; do
+          next="${src[$i]}"
+          case "$next" in
+            --) break ;;
+            -*) break ;;
+          esac
+          RELAUNCH_ARGS+=("$next")
+          i=$((i + 1))
+        done
+        continue
+        ;;
       --model|--fallback-model|--permission-mode|--effort|--agent|--agents|\
       --settings|--setting-sources|--append-system-prompt|--system-prompt|\
       --append-system-prompt-file|--system-prompt-file|--output-format|\
       --input-format|--json-schema|--max-turns|--max-budget-usd|--name|-n|\
-      --add-dir|--allowedTools|--allowed-tools|--disallowedTools|\
-      --disallowed-tools|--tools|--mcp-config|--plugin-dir|--betas|\
       --permission-prompt-tool|--debug-file)
         RELAUNCH_ARGS+=("$a")
         if [ $((i + 1)) -lt "$n" ]; then RELAUNCH_ARGS+=("${src[$((i + 1))]}"); fi

@@ -402,11 +402,14 @@ This runs in agent shells too, so agents inherit the right client keys.
 
 Agent command shells are non-interactive, so they do not read `~/.zshrc`.
 `~/.zshenv` applies the context when an agent marker is set (`CLAUDECODE`,
-`T3CODE_THREAD_ID`, `CODEX_THREAD_ID`, `CODEX_SANDBOX` or `OPENCODE`), and
-the VPS T3 unit sets `BASH_ENV=~/.config/zsh/contexts.bash` for bash commands.
-Only the agent's command shells switch context: the long-lived agent CLI
-process itself keeps the T3 environment (and therefore the personal values it
-started with).
+`T3CODE_THREAD_ID`, `CODEX_THREAD_ID`, `CODEX_SANDBOX` or `OPENCODE`) or when
+`DOT_CTX` is inherited, and the VPS T3 unit sets
+`BASH_ENV=~/.config/zsh/contexts.bash` for bash commands. `bin/claude-ctx`
+also sources `contexts.bash` before it starts Claude, so the Claude process
+and every MCP server it starts get the client context of the working
+directory. A Codex or OpenCode process keeps the personal values it started
+with; its command shells switch context. `dots secret run --ctx NAME` pins
+the context for the command and its child shells.
 
 `dots secret sync` refreshes every context cache. A failing client project
 warns and keeps that context's previous files, so one broken client does not

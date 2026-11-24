@@ -28,9 +28,10 @@ fi
 # Client contexts for agent command shells. Coding agents run each command
 # in a non-interactive shell that does not read ~/.zshrc; apply the context
 # here so agent commands in a client repo see client values (strict mode
-# removes the personal ones loaded above).
+# removes the personal ones loaded above). An inherited DOT_CTX or DOT_CTX_PIN
+# also applies the context in a child shell.
 if [[ ! -o interactive ]] && \
-   [[ -n "${CLAUDECODE:-}${T3CODE_THREAD_ID:-}${CODEX_THREAD_ID:-}${CODEX_SANDBOX:-}${OPENCODE:-}" ]]; then
+   [[ -n "${DOT_CTX:-}${DOT_CTX_PIN:-}${CLAUDECODE:-}${T3CODE_THREAD_ID:-}${CODEX_THREAD_ID:-}${CODEX_SANDBOX:-}${OPENCODE:-}" ]]; then
   if [[ -r "$HOME/.config/zsh/contexts.zsh" ]]; then
     source "$HOME/.config/zsh/contexts.zsh" >/dev/null 2>&1
   fi
