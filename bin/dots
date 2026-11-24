@@ -1361,7 +1361,8 @@ skills_sync_plugins() {
         continue
       fi
       # 2>&1: OpenCode prints the plugin table to stderr on some machines.
-      if opencode plugin list < /dev/null 2>&1 \
+      # Run from the repo: the listing differs outside a git project.
+      if (cd "$DOTFILES" && opencode plugin list < /dev/null 2>&1) \
           | awk -v id="$id" '$1 == id { found = 1 } END { exit !found }'; then
         info "  opencode: $id installed"
         continue
