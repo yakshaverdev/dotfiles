@@ -145,6 +145,21 @@ limit_end=$(cat "$STATE/ultra.limited")
 [ "$limit_end" -ge "$((now + 1780))" ] && [ "$limit_end" -le "$((now + 1820))" ] ||
   fail "__limit wrote $limit_end, expected about $((now + 1800))"
 
+# 8b. __limit uses the window at 100%, else the earliest reset (not the weekly one).
+reset
+export CLAUDE_ACCOUNT=team
+mkdir -p "$STATE"
+printf '{"five_hour":{"used_percentage":100,"resets_at":%s},"seven_day":{"used_percentage":40,"resets_at":%s}}\n' "$((now + 300))" "$((now + 86400))" > "$STATE/team.rate.json"
+run_ctx __limit </dev/null >/dev/null
+eq "__limit 5h at 100%" "$((now + 300))" "$(cat "$STATE/team.limited")"
+printf '{"five_hour":{"used_percentage":1,"resets_at":%s},"seven_day":{"used_percentage":0,"resets_at":%s}}\n' "$((now + 300))" "$((now + 86400))" > "$STATE/team.rate.json"
+run_ctx __limit </dev/null >/dev/null
+eq "__limit none at 100% -> earliest" "$((now + 300))" "$(cat "$STATE/team.limited")"
+printf '{"five_hour":{"used_percentage":20,"resets_at":%s},"seven_day":{"used_percentage":100,"resets_at":%s}}\n' "$((now + 300))" "$((now + 86400))" > "$STATE/team.rate.json"
+run_ctx __limit </dev/null >/dev/null
+eq "__limit 7d at 100%" "$((now + 86400))" "$(cat "$STATE/team.limited")"
+unset CLAUDE_ACCOUNT
+
 # 9. __statusline stores rate_limits and prints one line.
 reset
 export CLAUDE_ACCOUNT=ultra

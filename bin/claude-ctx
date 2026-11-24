@@ -70,11 +70,10 @@ case "${1:-}" in
     rate_file="$state_dir/$CLAUDE_ACCOUNT.rate.json"
     if [ -r "$rate_file" ] && command -v jq >/dev/null 2>&1; then
       end=$(jq -r --argjson now "$now" '
+        # The window at 100% sets the reset; if none is, the earliest reset.
         [.five_hour, .seven_day]
-        | map(select(type == "object"))
-        | map(.resets_at | select(type == "number"))
-        | map(select(. > $now))
-        | max // 0
+        | map(select(type == "object" and (.resets_at | type) == "number" and .resets_at > $now))
+        | (map(select((.used_percentage // 0) >= 100)) | map(.resets_at) | max) // (map(.resets_at) | min) // 0
       ' "$rate_file" 2>/dev/null)
       case "$end" in
         ''|*[!0-9]*) end=0 ;;
@@ -396,6 +395,8 @@ if [ "$caller_token" = 0 ]; then
   fi
 fi
 
+# Export before the first log line so launch lines say mode=terminal.
+[ "$wrap" = 1 ] && export CLAUDE_CTX_WRAPPER_PID=$$
 if [ "$caller_token" = 1 ]; then
   choose_account 1
   log_line "pick=caller-token"

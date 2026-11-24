@@ -42,7 +42,7 @@
     },
     "opencode": {
       "config": {
-        "binaryPath": "opencode",
+        "binaryPath": "~/.local/share/mise/shims/opencode",
         "customModels": [],
         "serverUrl": ""
       },

@@ -8,7 +8,7 @@ Run the task with OpenCode from the repo root. Use the model `opencode-go/deepse
 
 The caller gives you a session ID that starts with `ses_`. Pass it with `-s`: a new ID starts a fresh session, and an ID used before continues that session with all its earlier context. If no session ID is given, make one up as `ses_` plus a short slug and the current timestamp, for example `ses_fixlogin_20261110T0712`.
 
-`opencode` must be on PATH. If `command -v opencode` finds nothing, try `~/.opencode/bin/opencode`, then `/opt/homebrew/bin/opencode`.
+`opencode` must be on PATH. If `command -v opencode` finds nothing, use `~/.local/share/mise/shims/opencode` (mise installs it on both machines).
 
 Always run OpenCode in the background. OpenCode runs often take longer than the 10-minute limit of a foreground command.
 

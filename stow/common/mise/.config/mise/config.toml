@@ -44,6 +44,8 @@ uv = "latest"
 ruff = "latest"
 btop = { version = "latest", os = ["linux"] }  # macOS: Homebrew (aqua package unsupported on darwin)
 ast-grep = "latest"
+# OpenCode: GitHub release binary (see [tool_alias] below). Upgrade: dots upgrade opencode
+opencode = "latest"
 lazydocker = "latest"
 
 # sesh has no registry short name in this mise version.
@@ -62,3 +64,7 @@ lazydocker = "latest"
 # ─── go ─────────────────────────────────────────────────────────
 "go:golang.org/x/tools/gopls" = "latest"
 "go:honnef.co/go/tools/cmd/staticcheck" = "latest"
+
+[tool_alias]
+# Pin the backend: the registry default for opencode is an npm package.
+opencode = "aqua:anomalyco/opencode"

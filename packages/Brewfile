@@ -95,8 +95,6 @@ brew "nuclei"
 brew "pngquant"
 # Adds an OCR text layer to scanned PDF files
 brew "ocrmypdf"
-# AI coding agent, built for the terminal
-brew "opencode"
 # Multithreaded PNG optimizer written in Rust
 brew "oxipng"
 # Swiss-army knife of markup format conversion

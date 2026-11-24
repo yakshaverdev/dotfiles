@@ -66,6 +66,18 @@ ensure_npm_cooldown() {
   printf 'min-release-age=7\n' >> "$npmrc" || return 1
 }
 
+# mise owns the OpenCode binary, so OpenCode must not replace it itself.
+# Merge "autoupdate": false into the (untracked, machine-local) config.
+ensure_opencode_no_autoupdate() {
+  local cfg="$HOME/.config/opencode/opencode.json" tmp
+  mkdir -p "$(dirname "$cfg")" || return 1
+  # shellcheck disable=SC2016 # literal $schema key
+  [[ -f "$cfg" ]] || printf '{"$schema": "https://opencode.ai/config.json"}\n' > "$cfg" || return 1
+  [[ "$(jq -r '.autoupdate' "$cfg" 2>/dev/null)" == "false" ]] && return 0
+  tmp="$(mktemp "$cfg.XXXXXX")" || return 1
+  if jq '.autoupdate = false' "$cfg" > "$tmp"; then mv -f "$tmp" "$cfg"; else rm -f "$tmp"; return 1; fi
+}
+
 mise_bin() {
   if have mise; then
     command -v mise
@@ -302,6 +314,11 @@ cmd_install() {
     info "  min-release-age=7 present in ~/.npmrc"
   else
     fail "npm cooldown (~/.npmrc)"
+  fi
+  if ensure_opencode_no_autoupdate; then
+    info "  OpenCode autoupdate off (mise upgrades it)"
+  else
+    fail "OpenCode autoupdate (~/.config/opencode/opencode.json)"
   fi
 
   # 7. Git identity
@@ -734,6 +751,23 @@ cmd_t3() {
   esac
 }
 
+# ── upgrade ────────────────────────────────────────────────────────────────
+# mise is locked (installs never rewrite mise.lock), so upgrades are explicit:
+# bump the lock for both platforms, install here, commit, then run
+# `dots install` on the other machine.
+cmd_upgrade() {
+  if (($# == 0)); then
+    err "usage: dots upgrade <tool>...   (e.g. dots upgrade opencode)"
+    return 1
+  fi
+  local mise
+  mise="$(mise_bin)" || { err "mise not installed"; return 1; }
+  "$mise" lock -g -p linux-x64,macos-arm64 --bump "$@" || return 1
+  "$mise" install "$@" || return 1
+  info "Upgraded: $*. Commit stow/common/mise/.config/mise/{config.toml,mise.lock},"
+  info "push, then run 'dots install' on the other machine."
+}
+
 # ── main ───────────────────────────────────────────────────────────────────
 usage() {
   cat <<EOF
@@ -745,6 +779,7 @@ Commands:
   t3 pull   Copy live T3 Code settings into the repo
   t3 push   Apply repo T3 Code settings to the live app
   t3 diff   Show differences between live and tracked T3 settings
+  upgrade TOOL...  Bump mise tools to their newest release (both platforms)
   secret    Manage env vars / API keys (set, get, ls, rm, sync, import,
             reload, doctor)
 EOF
@@ -754,6 +789,7 @@ case "${1:-}" in
   install) cmd_install ;;
   doctor)  cmd_doctor ;;
   t3)      shift; cmd_t3 "${1:-}" ;;
+  upgrade) shift; cmd_upgrade "$@" ;;
   secret)  shift; exec "$DOTFILES/bin/dots-secret" "$@" ;;
   -h|--help|help|"") usage ;;
   *) err "unknown command: $1"; usage; exit 1 ;;

@@ -39,7 +39,7 @@ wallpapers/generate.sh  # regenerates the (gitignored) PNGs
 zen/link-profile.sh
 t3/                     # portable T3 Code settings (keybindings + base settings)
 
-stow/common/<pkg>       # both OSes: atuin bat btop claude gh git mise pnpm
+stow/common/<pkg>       # both OSes: atuin bat btop claude codex gh git mise pnpm
                         #            prompt tmux zsh
 stow/darwin/<pkg>       # macOS only: ghostty launchd wm zed
 stow/linux/<pkg>        # Linux only: systemd
@@ -103,7 +103,14 @@ mise install
 
 Commit `config.toml` and `mise.lock` together. `locked = true` makes
 `mise install` read the lockfile without rewriting it, so lock before you
-install; an install fails when the lockfile has no entry for this platform. Anything that is not
+install; an install fails when the lockfile has no entry for this platform.
+
+To upgrade a tool, run `dots upgrade <tool>` (for example `dots upgrade
+opencode`). It bumps `mise.lock` for both platforms and installs the new
+version here. Commit and push, then run `dots install` on the other machine.
+OpenCode comes from mise on both machines; `dots install` sets
+`"autoupdate": false` in `~/.config/opencode/opencode.json` so OpenCode does
+not replace the mise binary. Anything that is not
 available through mise (GUI apps, system daemons) belongs in `packages/Brewfile`
 or `packages/apt.txt` instead.
 
