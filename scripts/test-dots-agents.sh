@@ -18,7 +18,8 @@ REAL_XDG_DATA_HOME="${XDG_DATA_HOME-}"
 REAL_XDG_CACHE_HOME="${XDG_CACHE_HOME-}"
 JQ_BIN="$(command -v jq || true)"
 
-TMPROOT="$(mktemp -d "${TMPDIR:-/tmp}/dots-agents-test.XXXXXX")"
+# pwd -P: macOS mktemp gives /var/..., but git and the sync store /private/var/...
+TMPROOT="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/dots-agents-test.XXXXXX")" && pwd -P)"
 cleanup() {
   if [ "${KEEP_TMP:-0}" = "1" ]; then
     printf 'kept: %s\n' "$TMPROOT" >&2
@@ -383,7 +384,7 @@ not_contains '${CLIENT_TOKEN}' "$(tail -n 5 "$TEST_LOG/claude.log")" \
   "claude local unresolved ref"
 not_contains 'resolved-shovel-token' "$(cat "$STATE")" "state holds a resolved secret"
 eq "project local hash recorded" "64" \
-  "$(jq -r --arg k "claude-local:$(cd "$REPO" && pwd -P)" '.targets[$k].hashes.client | length' "$STATE")"
+  "$(jq -r --arg k "claude-local:$REPO" '.targets[$k].hashes.client | length' "$STATE")"
 
 PCODEX="$REPO/.codex/config.toml"
 POPEN="$REPO/opencode.json"
