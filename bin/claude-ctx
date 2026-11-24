@@ -360,6 +360,17 @@ if [ -n "${DOTS_SHIM_DIR:-}" ]; then
   unset _path_entries _entry new_path
 fi
 claude_bin=$(command -v claude 2>/dev/null) || claude_bin=""
+# Non-login shells on macOS lack Homebrew on PATH; try the usual installs.
+if [ -z "$claude_bin" ]; then
+  for _c in "$HOME/.local/bin/claude" /opt/homebrew/bin/claude /usr/local/bin/claude; do
+    if [ -x "$_c" ]; then
+      claude_bin="$_c"
+      PATH="${_c%/claude}:$PATH"
+      export PATH
+      break
+    fi
+  done
+fi
 case "$claude_bin" in
   */bin/shims/*)
     printf 'claude-ctx: real claude not found on PATH\n' >&2
