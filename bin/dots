@@ -68,6 +68,29 @@ version_ge() {
 }
 # END version_ge
 
+# BEGIN npm_cooldown_upgrade
+# min-release-age needs npm >= 11.10.0; Node 22 ships npm 10, so the gate
+# upgrades npm after mise puts node on PATH.
+npm_needs_upgrade() { # version
+  [[ -n "$1" ]] && ! version_ge "$1" 11.10.0
+}
+
+ensure_npm_version() { # current-version
+  local ver="$1"
+  if [[ -z "$ver" ]]; then
+    warn "npm not found — cannot check the release cooldown"
+    return 0
+  fi
+  npm_needs_upgrade "$ver" || return 0
+  info "  npm $ver ignores min-release-age (needs >= 11.10.0); installing npm@11"
+  if npm install -g npm@11 < /dev/null 2>&1 | sed 's/^/  /'; then
+    info "  npm updated to $(npm --version 2>/dev/null || printf 'unknown')"
+  else
+    fail "npm install -g npm@11"
+  fi
+}
+# END npm_cooldown_upgrade
+
 # Ensure ~/.npmrc carries the npm release cooldown. The file also holds a
 # private auth token and machine-specific prefix, so it is never tracked and
 # this function never prints or rewrites its existing lines.
@@ -121,6 +144,54 @@ codex_bin() {
   else
     return 1
   fi
+}
+
+# The CLI honours CODEX_HOME; direct reads must use the same path.
+codex_home() { printf '%s\n' "${CODEX_HOME:-$HOME/.codex}"; }
+codex_config_file() { printf '%s\n' "$(codex_home)/config.toml"; }
+
+# Claude Code plugins: the tracked settings hold the desired list, and Claude
+# records what it installed in installed_plugins.json.
+claude_settings_file() {
+  printf '%s\n' "$DOTFILES/stow/common/claude/.claude/settings.json"
+}
+
+claude_installed_file() {
+  printf '%s\n' "$HOME/.claude/plugins/installed_plugins.json"
+}
+
+claude_enabled_plugins() { # settings-file
+  jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' \
+    "$1" 2>/dev/null
+}
+
+claude_plugin_installed() { # plugin-id
+  local file
+  file="$(claude_installed_file)"
+  [[ -f "$file" ]] || return 1
+  jq -e --arg p "$1" '(.plugins // {}) | has($p)' "$file" >/dev/null 2>&1
+}
+
+# Configured TPM plugins ("owner/name"), one per line, from ~/.tmux.conf.
+tmux_configured_plugins() {
+  local conf="${TMUX_CONF:-$HOME/.tmux.conf}"
+  [[ -f "$conf" ]] || return 0
+  sed -n \
+    -e "s/^[[:space:]]*set[[:space:]][[:space:]]*-g[[:space:]]*@plugin[[:space:]]*'\([^']*\)'.*/\1/p" \
+    -e 's/^[[:space:]]*set[[:space:]][[:space:]]*-g[[:space:]]*@plugin[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "$conf" \
+  | sed -e 's/[[:space:]]*$//' -e '/^$/d' | awk '!seen[$0]++'
+}
+
+# Plugin directory names that TPM has not installed yet (tpm itself excluded).
+tmux_missing_plugins() {
+  local entry name
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    name="${entry##*/}"
+    [[ "$name" == "tpm" ]] && continue
+    [[ -d "$HOME/.tmux/plugins/$name" ]] || printf '%s\n' "$name"
+  done < <(tmux_configured_plugins)
 }
 
 # Move a real file/dir out of the way, preserving its path relative to $HOME.
@@ -437,21 +508,38 @@ cmd_install() {
     fail "mise not available"
   fi
 
-  # 8a. Agent skills and plugins (non-fatal)
+  # 8a. npm must be new enough for ~/.npmrc min-release-age (Node 22 ships 10.x)
+  info "→ npm release cooldown support..."
+  ensure_npm_version "$(npm --version 2>/dev/null || true)"
+
+  # 8b. Agent skills and plugins (non-fatal)
   info "→ Agent skills and plugins..."
   cmd_skills sync || fail "dots skills sync"
 
-  # 8b. Agent MCP servers (global; project sync runs inside a repo)
+  # 8c. Agent MCP servers (global; project sync runs inside a repo)
   info "→ Agent MCP servers..."
   "$DOTFILES/bin/dots-agents" sync --global-only || fail "dots agents sync"
 
-  # 8c. tmux plugins (.tmux.conf runs TPM; resurrect/continuum need it)
-  if have tmux && [[ ! -d "$HOME/.tmux/plugins/tpm" ]]; then
-    info "→ tmux plugin manager (TPM)..."
-    if git clone -q --depth 1 https://github.com/tmux-plugins/tpm "$HOME/.tmux/plugins/tpm"; then
-      "$HOME/.tmux/plugins/tpm/bin/install_plugins" >/dev/null 2>&1 || fail "tmux plugins install"
-    else
-      fail "TPM clone"
+  # 8d. tmux plugins (.tmux.conf runs TPM; resurrect/continuum need it)
+  if have tmux; then
+    local missing_plugins
+    if [[ ! -d "$HOME/.tmux/plugins/tpm" ]]; then
+      info "→ tmux plugin manager (TPM)..."
+      if git clone -q --depth 1 https://github.com/tmux-plugins/tpm \
+          "$HOME/.tmux/plugins/tpm"; then
+        info "  cloned TPM"
+      else
+        fail "TPM clone"
+      fi
+    fi
+    if [[ -x "$HOME/.tmux/plugins/tpm/bin/install_plugins" ]]; then
+      missing_plugins="$(tmux_missing_plugins)"
+      if [[ -n "$missing_plugins" ]]; then
+        info "→ tmux plugins..."
+        printf '%s\n' "$missing_plugins" | sed 's/^/  installing /; s/$/.../'
+        "$HOME/.tmux/plugins/tpm/bin/install_plugins" >/dev/null 2>&1 \
+          || fail "tmux plugins install"
+      fi
     fi
   fi
 
@@ -565,45 +653,40 @@ doctor_join_words() { # max word...
   printf '%s\n' "$out"
 }
 
-# True when a TOML file has the exact table header (trailing spaces ignored).
-doctor_toml_table() { # file header
-  [[ -f "$1" ]] || return 1
-  awk -v target="$2" '
-    { line = $0; sub(/[[:space:]]+$/, "", line) }
-    line == target { found = 1; exit }
-    END { exit found ? 0 : 1 }
-  ' "$1"
+# True when the TOML file parses and jq filter (with $k set to the key)
+# matches. yq reads TOML structure, so table headers with a trailing comment
+# or other spacing still count.
+doctor_toml_has() { # file key jq-filter
+  local file="$1" key="$2" filter="$3" json
+  [[ -f "$file" ]] || return 1
+  json="$(yq -p toml -o json '.' "$file" 2>/dev/null)" || return 1
+  # shellcheck disable=SC2016 # $k is a jq variable, not a shell one
+  jq -e --arg k "$key" "$filter" <<<"$json" >/dev/null 2>&1
 }
 
-# Codex trusts a project when ~/.codex/config.toml has its path with
+# Codex trusts a project when its config has the path with
 # trust_level = "trusted". This mirrors agents_codex_project_trusted in
 # bin/dots-agents for one path, so doctor does not source that whole CLI.
 doctor_codex_trusted() { # path
-  local cfg="$HOME/.codex/config.toml"
-  [[ -f "$cfg" ]] || return 1
-  awk -v target="[projects.\"$1\"]" '
-    /^\[/ {
-      if (found) exit
-      if ($0 == target) { found = 1 }
-      next
-    }
-    found && /^[[:space:]]*trust_level[[:space:]]*=[[:space:]]*"trusted"/ { ok = 1; exit }
-    END { exit ok ? 0 : 1 }
-  ' "$cfg"
+  # shellcheck disable=SC2016 # $k is a jq variable, not a shell one
+  doctor_toml_has "$(codex_config_file)" "$1" \
+    '(.projects[$k].trust_level // "") == "trusted"'
 }
 
 # A Codex plugin counts as installed when its config table exists or its cache
 # directory is present (the same signals `codex plugin list` reports).
 doctor_codex_plugin() { # plugin-id (name@marketplace)
   local id="$1" name market
-  doctor_toml_table "$HOME/.codex/config.toml" "[plugins.\"$id\"]" && return 0
+  # shellcheck disable=SC2016 # $k is a jq variable, not a shell one
+  doctor_toml_has "$(codex_config_file)" "$id" '(.plugins // {}) | has($k)' \
+    && return 0
   name="${id%@*}"
   market="${id#*@}"
   if [[ "$market" == "$id" ]]; then
     market=""
   fi
-  [[ -d "$HOME/.codex/plugins/cache/$market/$name" ]] && return 0
-  [[ -d "$HOME/.codex/plugins/$id" ]] && return 0
+  [[ -d "$(codex_home)/plugins/cache/$market/$name" ]] && return 0
+  [[ -d "$(codex_home)/plugins/$id" ]] && return 0
   return 1
 }
 
@@ -780,24 +863,22 @@ cmd_doctor() {
   # Claude Code plugins: every enabled one must be in installed_plugins.json.
   local claude_settings claude_installed p_enabled p_name
   local -a claude_missing=()
-  claude_settings="$DOTFILES/stow/common/claude/.claude/settings.json"
-  claude_installed="$HOME/.claude/plugins/installed_plugins.json"
+  claude_settings="$(claude_settings_file)"
+  claude_installed="$(claude_installed_file)"
   if ! have jq; then
     note "jq not found — Claude plugins unchecked"
   elif [[ ! -f "$claude_settings" ]]; then
     note "stow/common/claude/.claude/settings.json not found — Claude plugins unchecked"
   elif [[ ! -f "$claude_installed" ]]; then
-    note "$HOME/.claude/plugins/installed_plugins.json not found — Claude plugins unchecked"
+    note "$claude_installed not found — Claude plugins unchecked"
   else
-    if ! p_enabled="$(jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' \
-        "$claude_settings" 2>/dev/null)"; then
+    if ! p_enabled="$(claude_enabled_plugins "$claude_settings")"; then
       note "cannot read $claude_settings — Claude plugins unchecked"
       p_enabled=""
     fi
     while IFS= read -r p_name; do
       [[ -n "$p_name" ]] || continue
-      if jq -e --arg p "$p_name" '(.plugins // {}) | has($p)' \
-          "$claude_installed" >/dev/null 2>&1; then
+      if claude_plugin_installed "$p_name"; then
         ok "claude: $p_name"
       else
         claude_missing+=("$p_name")
@@ -828,8 +909,11 @@ cmd_doctor() {
         note "$HOME/.claude.json not found — Claude MCP servers unchecked"
         claude_cfg_ok=0
       fi
-      if [[ ! -f "$HOME/.codex/config.toml" ]]; then
-        note "$HOME/.codex/config.toml not found — Codex MCP servers unchecked"
+      if ! have yq; then
+        note "yq not found — Codex MCP servers unchecked"
+        codex_cfg_ok=0
+      elif [[ ! -f "$(codex_config_file)" ]]; then
+        note "$(codex_config_file) not found — Codex MCP servers unchecked"
         codex_cfg_ok=0
       fi
       if [[ ! -f "$oc_cfg" ]]; then
@@ -847,7 +931,9 @@ cmd_doctor() {
         fi
         if ((codex_cfg_ok)); then
           mcp_checked="${mcp_checked:+$mcp_checked, }Codex"
-          doctor_toml_table "$HOME/.codex/config.toml" "[mcp_servers.$mcp_name]" \
+          # shellcheck disable=SC2016 # $k is a jq variable, not a shell one
+          doctor_toml_has "$(codex_config_file)" "$mcp_name" \
+            '(.mcp_servers // {}) | has($k)' \
             || mcp_missing="${mcp_missing:+$mcp_missing, }Codex"
         fi
         if ((oc_cfg_ok)); then
@@ -887,8 +973,10 @@ cmd_doctor() {
     else
       main_root="$(dirname "$git_common")"
     fi
-    if [[ ! -f "$HOME/.codex/config.toml" ]]; then
-      note "$HOME/.codex/config.toml not found — Codex trust unchecked"
+    if [[ ! -f "$(codex_config_file)" ]]; then
+      note "$(codex_config_file) not found — Codex trust unchecked"
+    elif ! have yq; then
+      note "yq not found — Codex trust unchecked"
     elif trust_dir="$main_root"; while [[ "$trust_dir" != / ]] && ! doctor_codex_trusted "$trust_dir"; do trust_dir="$(dirname "$trust_dir")"; done; [[ "$trust_dir" != / ]]; then
       # Codex trust on a parent folder covers the repo too.
       ok "codex trusts $main_root (via $trust_dir)"
@@ -914,14 +1002,22 @@ cmd_doctor() {
     fi
   fi
 
-  # tmux plugins: the tracked config runs TPM, so its clone must exist.
+  # tmux plugins: the tracked config runs TPM, so its clone and every
+  # configured plugin directory must exist.
   info "→ tmux plugins"
   if ! have tmux; then
     note "tmux not installed — skipped"
-  elif [[ -d "$HOME/.tmux/plugins/tpm" ]]; then
-    ok "TPM installed"
   else
-    bad "$HOME/.tmux/plugins/tpm missing (run: dots install)"
+    local tmux_missing_plugin
+    if [[ -d "$HOME/.tmux/plugins/tpm" ]]; then
+      ok "TPM installed"
+    else
+      bad "$HOME/.tmux/plugins/tpm missing (run: dots install)"
+    fi
+    while IFS= read -r tmux_missing_plugin; do
+      [[ -n "$tmux_missing_plugin" ]] || continue
+      bad "tmux plugin $tmux_missing_plugin missing from $HOME/.tmux/plugins (run: dots install)"
+    done < <(tmux_missing_plugins)
   fi
 
   # Login shell
@@ -1011,7 +1107,7 @@ cmd_doctor() {
   if [[ -z "$npm_ver" ]]; then
     note "npm not found — cannot confirm min-release-age support"
   elif ! version_ge "$npm_ver" 11.10.0; then
-    note "npm $npm_ver ignores min-release-age (needs >= 11.10.0); cooldown inactive"
+    note "npm $npm_ver ignores min-release-age (needs >= 11.10.0); cooldown inactive (run: dots install)"
   elif ((has_cooldown)); then
     ok "$HOME/.npmrc has min-release-age (npm $npm_ver)"
   else
@@ -1307,6 +1403,59 @@ skills_sync() {
   fi
 
   skills_sync_plugins
+  claude_sync_plugins
+}
+
+# Install enabled Claude Code plugins that installed_plugins.json lacks. The
+# marketplace source comes from extraKnownMarketplaces in the tracked settings.
+claude_sync_plugins() {
+  local settings id mkt source
+  settings="$(claude_settings_file)"
+  info "→ Claude Code plugins"
+  if ! have claude; then
+    warn "claude CLI not found — skipping Claude plugins"
+    return 0
+  fi
+  if ! have jq; then
+    warn "jq not found — skipping Claude plugins"
+    return 0
+  fi
+  if [[ ! -f "$settings" ]]; then
+    warn "$settings not found — skipping Claude plugins"
+    return 0
+  fi
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    if claude_plugin_installed "$id"; then
+      info "  claude: $id installed"
+      continue
+    fi
+    mkt="${id#*@}"
+    if [[ "$mkt" == "$id" ]]; then
+      warn "claude plugin without a marketplace: $id"
+      continue
+    fi
+    if ! claude plugin marketplace list < /dev/null 2>&1 | grep -qF -- "$mkt"; then
+      source="$(jq -r --arg m "$mkt" \
+        '.extraKnownMarketplaces[$m].source | (.repo // .url // .path // empty)' \
+        "$settings" 2>/dev/null)"
+      if [[ -z "$source" ]]; then
+        fail "claude: marketplace $mkt is not known and settings has no source for it"
+        continue
+      fi
+      info "  claude: adding marketplace $mkt ($source)"
+      if ! claude plugin marketplace add "$source" < /dev/null 2>&1 | sed 's/^/    /'; then
+        fail "claude marketplace add $mkt"
+        continue
+      fi
+    fi
+    info "  claude: installing $id"
+    if claude plugin install "$id" < /dev/null 2>&1 | sed 's/^/    /'; then
+      info "  Claude: restart open sessions to load $id"
+    else
+      fail "claude plugin install $id"
+    fi
+  done < <(claude_enabled_plugins "$settings")
 }
 
 # Install whichever agent plugins from packages/agent-plugins are missing.

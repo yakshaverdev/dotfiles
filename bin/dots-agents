@@ -50,6 +50,10 @@ codex_bin() {
   fi
 }
 
+# The CLI honours CODEX_HOME; direct config writes must use the same path.
+codex_home() { printf '%s\n' "${CODEX_HOME:-$HOME/.codex}"; }
+codex_config_file() { printf '%s\n' "$(codex_home)/config.toml"; }
+
 # ── agents ─────────────────────────────────────────────────────────────────
 # One source format for MCP servers and project skills, translated into the
 # native config of Claude Code, Codex and OpenCode. Levels:
@@ -296,29 +300,129 @@ agents_trust_paths() { # repo
   } | awk '!seen[$0]++'
 }
 
-# Codex only reads <repo>/.codex/config.toml for a trusted project.
+# Codex only reads <repo>/.codex/config.toml for a trusted project. yq reads
+# TOML structure, so a table header with a trailing comment still counts.
+# 0: entry exists (any trust_level). 1: no entry. 2: file does not parse.
+agents_codex_trust_entry() { # file path
+  local file="$1" path="$2" json
+  have yq || return 2
+  [[ -f "$file" ]] || return 1
+  if ! json="$(yq -p toml -o json '.' "$file" 2>/dev/null)"; then
+    return 2
+  fi
+  jq -e --arg p "$path" '(.projects // {}) | has($p)' <<<"$json" >/dev/null 2>&1
+}
+
+# yq cannot rewrite TOML and keep comments, so append the table to a temp copy
+# and let yq validate it before the move into place.
+agents_codex_trust_add() { # file path
+  local file="$1" path="$2" esc tmp dir rc=0
+  if ! have yq; then
+    warn "yq not found — not adding a Codex trust entry to $file"
+    return 1
+  fi
+  agents_codex_trust_entry "$file" "$path" || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    2) warn "$file is not valid TOML — not adding a trust entry for $path"; return 1 ;;
+  esac
+  # TOML basic-string escapes: backslash first, then double quote.
+  esc="$path"
+  esc="${esc//\\/\\\\}"
+  esc="${esc//\"/\\\"}"
+  dir="$(dirname "$file")"
+  if ! mkdir -p "$dir"; then
+    warn "could not create $dir"
+    return 1
+  fi
+  if ! tmp="$(mktemp "$dir/.codex-config.XXXXXX")"; then
+    warn "could not create a temp file in $dir"
+    return 1
+  fi
+  if [[ -f "$file" ]] && ! cp "$file" "$tmp"; then
+    warn "could not read $file"
+    rm -f "$tmp"
+    return 1
+  fi
+  if [[ -s "$tmp" ]]; then
+    [[ "$(tail -c 1 "$tmp")" == "" ]] || printf '\n' >> "$tmp"
+    printf '\n' >> "$tmp"
+  fi
+  printf '[projects."%s"]\ntrust_level = "trusted"\n' "$esc" >> "$tmp"
+  if ! yq -p toml -o json '.' "$tmp" >/dev/null 2>&1; then
+    warn "could not validate $file — not writing a trust entry"
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! mv -f "$tmp" "$file"; then
+    warn "could not write $file"
+    rm -f "$tmp"
+    return 1
+  fi
+  return 0
+}
+
 agents_codex_project_trusted() { # repo
-  local cfg="$HOME/.codex/config.toml" p
+  local cfg p json
+  cfg="$(codex_config_file)"
   [[ -f "$cfg" ]] || return 1
+  if ! json="$(yq -p toml -o json '.' "$cfg" 2>/dev/null)"; then
+    return 1
+  fi
   while IFS= read -r p; do
     [[ -n "$p" ]] || continue
-    if awk -v target="[projects.\"$p\"]" '
-      $0 ~ /^\[/ {
-        if (found) exit
-        if ($0 == target) { found = 1 }
-        next
-      }
-      found && /^[[:space:]]*trust_level[[:space:]]*=[[:space:]]*"trusted"/ { ok = 1; exit }
-      END { exit ok ? 0 : 1 }
-    ' "$cfg"; then
+    if jq -e --arg p "$p" '(.projects[$p].trust_level // "") == "trusted"' \
+        <<<"$json" >/dev/null 2>&1; then
       return 0
     fi
   done < <(agents_trust_paths "$1")
   return 1
 }
 
+# Claude Code keeps MCP entries in a private JSON file; CLAUDE_CONFIG_DIR moves
+# it. User and local scope share .claude.json; project scope is <dir>/.mcp.json.
+claude_config_file() {
+  printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
+}
+
+# Print the saved JSON for one server, or nothing when it is absent.
+agents_claude_saved() { # scope dir name
+  local scope="$1" dir="$2" name="$3" file real_dir
+  case "$scope" in
+    user)
+      file="$(claude_config_file)"
+      [[ -f "$file" ]] || return 0
+      jq -c --arg n "$name" '(.mcpServers // {})[$n] // empty' "$file" 2>/dev/null || true
+      ;;
+    local)
+      file="$(claude_config_file)"
+      [[ -f "$file" ]] || return 0
+      real_dir="$(cd "$dir" 2>/dev/null && pwd -P)" || real_dir="$dir"
+      jq -c --arg a "$dir" --arg b "$real_dir" --arg n "$name" '
+        ((.projects[$a] // .projects[$b] // {}).mcpServers // {})[$n] // empty
+      ' "$file" 2>/dev/null || true
+      ;;
+    project)
+      file="$dir/.mcp.json"
+      [[ -f "$file" ]] || return 0
+      jq -c --arg n "$name" '(.mcpServers // {})[$n] // empty' "$file" 2>/dev/null || true
+      ;;
+  esac
+}
+
+# True when the saved entry equals the desired translation. jq --sort-keys
+# makes key order irrelevant.
+agents_claude_entry_matches() { # scope dir name desired-file
+  local saved want
+  saved="$(agents_claude_saved "$1" "$2" "$3")"
+  [[ -n "$saved" ]] || return 1
+  want="$(jq -S -c '.' "$4" 2>/dev/null)" || return 1
+  [[ "$(printf '%s' "$saved" | jq -S -c '.' 2>/dev/null)" == "$want" ]]
+}
+
 agents_claude_project_trusted() { # repo
-  local cfg="$HOME/.claude.json"
+  local cfg
+  cfg="$(claude_config_file)"
   [[ -f "$cfg" ]] || return 1
   jq -e --arg raw "$(agents_trust_paths "$1")" '
     ($raw | split("\n") | map(select(length > 0))) as $paths
@@ -436,8 +540,9 @@ agents_apply_claude_scope() { # state-key scope cwd map-file
     agents_claude_remove "$dir" "$scope" "$name"
   done < <(jq -r '.[]' <<<"$stale")
 
-  # A server whose translation is unchanged since the last sync keeps its CLI
-  # entry, so its bearer token does not pass through argv again.
+  # Skip a server whose translation is unchanged and whose real config entry
+  # still matches, so its bearer token does not pass through argv again. A
+  # deleted or edited entry is restored.
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
     hash="$(agents_sha256 "$AGENTS_TMP/$skey.$name.json" 2>/dev/null || true)"
@@ -446,7 +551,9 @@ agents_apply_claude_scope() { # state-key scope cwd map-file
     fi
     prev_hash="$(jq -r --arg n "$name" '.[$n] // ""' <<<"$prev_hashes")"
     if [[ -n "$hash" && -n "$prev_hash" && "$hash" == "$prev_hash" ]] \
-        && jq -e --arg n "$name" 'index($n) != null' <<<"$prev" >/dev/null; then
+        && jq -e --arg n "$name" 'index($n) != null' <<<"$prev" >/dev/null \
+        && agents_claude_entry_matches "$scope" "$dir" "$name" \
+             "$AGENTS_TMP/$skey.$name.json"; then
       printf '%s\n' "$name" >> "$ok"
     else
       printf '%s\n' "$name" >> "$changed"
@@ -478,7 +585,7 @@ agents_apply_claude_scope() { # state-key scope cwd map-file
   fi
   # Local scope holds resolved client values in Claude's private config file.
   if [[ "$scope" == local ]]; then
-    chmod 600 "$HOME/.claude.json" 2>/dev/null || true
+    chmod 600 "$(claude_config_file)" 2>/dev/null || true
   fi
   info "  $tag: $(agents_count "$ok") server(s)"
   return 0
@@ -867,7 +974,7 @@ agents_sync_global() {
   fi
 
   if codex_bin >/dev/null; then
-    agents_apply_codex "codex-global" "$HOME/.codex/config.toml" "$map" 1 0
+    agents_apply_codex "codex-global" "$(codex_config_file)" "$map" 1 0
   else
     warn "codex not found — skipping global Codex MCP"
   fi
@@ -932,7 +1039,7 @@ agents_sync_project_skills() { # repo
 
 agents_sync_project() {
   local repo context cfg proj client client_resolved merged literal
-  local trust_hint main_root
+  local trust_hint main_root codex_cfg
   repo="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   if [[ -z "$repo" ]]; then
     info "  not a git repository — skipping project level"
@@ -997,10 +1104,10 @@ agents_sync_project() {
           # Codex ignores .codex/config.toml in an untrusted project. Trust the
           # main repo (that covers its worktrees), unless the user already
           # wrote an entry for it, such as "untrusted".
-          if grep -qxF "[projects.\"$trust_hint\"]" "$HOME/.codex/config.toml" 2>/dev/null; then
+          codex_cfg="$(codex_config_file)"
+          if agents_codex_trust_entry "$codex_cfg" "$trust_hint"; then
             warn "agents: Codex does not trust $trust_hint (an existing entry says so); it ignores .codex/config.toml"
-          else
-            printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$trust_hint" >> "$HOME/.codex/config.toml"
+          elif agents_codex_trust_add "$codex_cfg" "$trust_hint"; then
             info "  codex: trusted $(agents_display_path "$trust_hint")"
           fi
         fi

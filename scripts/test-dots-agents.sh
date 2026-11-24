@@ -17,6 +17,7 @@ REAL_XDG_STATE_HOME="${XDG_STATE_HOME-}"
 REAL_XDG_DATA_HOME="${XDG_DATA_HOME-}"
 REAL_XDG_CACHE_HOME="${XDG_CACHE_HOME-}"
 JQ_BIN="$(command -v jq || true)"
+YQ_BIN="$(command -v yq || true)"
 
 # pwd -P: macOS mktemp gives /var/..., but git and the sync store /private/var/...
 TMPROOT="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/dots-agents-test.XXXXXX")" && pwd -P)"
@@ -97,9 +98,79 @@ if [ -n "$JQ_BIN" ]; then
   chmod +x "$FAKEBIN/jq"
 fi
 
+# yq is also a mise shim, so it needs the real HOME and XDG paths.
+if [ -n "$YQ_BIN" ]; then
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'HOME=%q\n' "$REAL_HOME"
+    printf 'XDG_CONFIG_HOME=%q\n' "$(real_xdg_dir "$REAL_XDG_CONFIG_HOME" .config)"
+    printf 'XDG_STATE_HOME=%q\n' \
+      "$(real_xdg_dir "$REAL_XDG_STATE_HOME" .local/state)"
+    printf 'XDG_DATA_HOME=%q\n' "$(real_xdg_dir "$REAL_XDG_DATA_HOME" .local/share)"
+    printf 'XDG_CACHE_HOME=%q\n' "$(real_xdg_dir "$REAL_XDG_CACHE_HOME" .cache)"
+    printf 'exec %q "$@"\n' "$YQ_BIN"
+  } > "$FAKEBIN/yq"
+  chmod +x "$FAKEBIN/yq"
+fi
+
 cat > "$FAKEBIN/claude" <<'FAKE'
 #!/usr/bin/env bash
+# Log every call, and keep the config file a real `claude` would update so the
+# sync can check whether a saved entry still exists and still matches.
 printf '%s\n' "$*" >> "$TEST_LOG/claude.log"
+cfg="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
+scope="user"
+dir="$(pwd -P)"
+sub="${2:-}"
+case "${1:-} $sub" in
+  "mcp add-json"|"mcp remove")
+    shift 2
+    while (($#)); do
+      case "$1" in
+        -s|--scope) scope="${2:-}"; shift 2 ;;
+        *) break ;;
+      esac
+    done
+    name="${1:-}"
+    target="$cfg"
+    [[ "$scope" == project ]] && target="$dir/.mcp.json"
+    case "$sub" in
+      add-json)
+        json="${2:-}"
+        mkdir -p "$(dirname "$target")"
+        [[ -f "$target" ]] || printf '{}\n' > "$target"
+        case "$scope" in
+          local)
+            jq --arg d "$dir" --arg n "$name" --argjson v "$json" '
+              .projects = (.projects // {})
+              | .projects[$d] = ((.projects[$d] // {})
+                  | .mcpServers = ((.mcpServers // {}) + {($n): $v}))
+            ' "$target" > "$target.tmp" && mv "$target.tmp" "$target"
+            ;;
+          *)
+            jq --arg n "$name" --argjson v "$json" \
+              '.mcpServers = ((.mcpServers // {}) + {($n): $v})' \
+              "$target" > "$target.tmp" && mv "$target.tmp" "$target"
+            ;;
+        esac
+        ;;
+      remove)
+        [[ -f "$target" ]] || exit 0
+        case "$scope" in
+          local)
+            jq --arg d "$dir" --arg n "$name" '
+              if .projects[$d] then del(.projects[$d].mcpServers[$n]) else . end
+            ' "$target" > "$target.tmp" && mv "$target.tmp" "$target"
+            ;;
+          *)
+            jq --arg n "$name" 'del(.mcpServers[$n])' "$target" \
+              > "$target.tmp" && mv "$target.tmp" "$target"
+            ;;
+        esac
+        ;;
+    esac
+    ;;
+esac
 exit 0
 FAKE
 chmod +x "$FAKEBIN/claude"
@@ -353,6 +424,28 @@ ADD_BEFORE="$(claude_adds)"
 run_dots "$HOME" sync --global-only
 eq "legacy state settles" "$ADD_BEFORE" "$(claude_adds)"
 
+# A server deleted from Claude's real config is restored even when the stored
+# translation hash still matches.
+jq 'del(.mcpServers.deepwiki)' "$HOME/.claude.json" > "$TMPROOT/claude.json"
+mv "$TMPROOT/claude.json" "$HOME/.claude.json"
+ADD_BEFORE="$(claude_adds)"
+run_dots "$HOME" sync --global-only
+eq "claude deleted entry status" "0" "$STATUS"
+eq "claude deleted entry re-added" "$((ADD_BEFORE + 1))" "$(claude_adds)"
+contains "add-json -s user deepwiki" "$(tail -n 1 "$TEST_LOG/claude.log")" \
+  "claude restored entry"
+eq "claude restored url" "https://mcp.deepwiki.com/v2" \
+  "$(jq -r '.mcpServers.deepwiki.url' "$HOME/.claude.json")"
+
+# Key order in the saved entry does not matter.
+jq '.mcpServers.deepwiki = {url: .mcpServers.deepwiki.url, type: .mcpServers.deepwiki.type}' \
+  "$HOME/.claude.json" > "$TMPROOT/claude.json"
+mv "$TMPROOT/claude.json" "$HOME/.claude.json"
+ADD_BEFORE="$(claude_adds)"
+run_dots "$HOME" sync --global-only
+eq "claude reordered entry status" "0" "$STATUS"
+eq "claude reordered entry not re-added" "$ADD_BEFORE" "$(claude_adds)"
+
 # ── project level ──────────────────────────────────────────────────────────
 REPO="$TMPROOT/repo"
 make_repo "$REPO" "git@github.com:shovelers/agents-test.git"
@@ -432,6 +525,21 @@ eq "project idempotent" "$PROJECT_BEFORE" "$PROJECT_AFTER"
 for pat in .codex/config.toml opencode.json .claude/settings.local.json .claude/skills; do
   eq "exclude $pat still once" "1" "$(exclude_count "$REPO" "$pat")"
 done
+
+# A local-scope entry deleted from Claude's config is restored too.
+LOCAL_DIR="$(cd "$REPO" && pwd -P)"
+jq --arg d "$LOCAL_DIR" 'del(.projects[$d].mcpServers.client)' "$HOME/.claude.json" \
+  > "$TMPROOT/claude.json"
+mv "$TMPROOT/claude.json" "$HOME/.claude.json"
+LOCAL_ADDS_BEFORE="$(grep -c 'add-json -s local' "$TEST_LOG/claude.log" || true)"
+run_dots "$REPO" sync --project-only
+eq "local deleted entry status" "0" "$STATUS"
+eq "local deleted entry re-added" "$((LOCAL_ADDS_BEFORE + 1))" \
+  "$(grep -c 'add-json -s local' "$TEST_LOG/claude.log" || true)"
+contains "add-json -s local client" "$(tail -n 1 "$TEST_LOG/claude.log")" \
+  "claude restored local entry"
+eq "local restored url" "https://client.example/mcp" \
+  "$(jq -r --arg d "$LOCAL_DIR" '.projects[$d].mcpServers.client.url' "$HOME/.claude.json")"
 
 # ── tracked target is skipped ──────────────────────────────────────────────
 TRACKED="$TMPROOT/tracked"
@@ -566,5 +674,87 @@ if [ -f "$EMPTYREPO/opencode.json" ]; then
   eq "empty client server skipped" "null" \
     "$(jq -r '.mcp.clientempty // "null"' "$EMPTYREPO/opencode.json")"
 fi
+
+# ── resolve refs: one pass, no re-expansion ────────────────────────────────
+# shellcheck disable=SC2016 # literal ${VAR} test data
+printf '{"A":"${B}","B":"resolved"}\n' > "$TMPROOT/refvals.json"
+# shellcheck disable=SC2016 # literal ${VAR} test data
+printf '"${A}:${B}"\n' > "$TMPROOT/refinput.json"
+# shellcheck disable=SC2016 # literal ${VAR} test data
+eq "refs replace in one pass" '"${B}:resolved"' \
+  "$(jq -c -f "$ROOT/lib/agents/resolve-refs.jq" --slurpfile vals "$TMPROOT/refvals.json" \
+      "$TMPROOT/refinput.json")"
+
+# ── Codex trust: read TOML structure, write valid TOML ─────────────────────
+table_count() { # project path
+  awk -v p="$1" 'index($0, "[projects.\"" p "\"]") == 1 { n++ } END { print n + 0 }' \
+    "$HOME/.codex/config.toml"
+}
+
+COMMENTED="$TMPROOT/commented"
+make_repo "$COMMENTED" "git@github.com:example/commented.git"
+printf '{"mcpServers":{"commentedsrv":{"command":"srv"}}}\n' > "$COMMENTED/.mcp.json"
+printf '\n[projects."%s"]   # trusted by hand\ntrust_level = "trusted"\n' \
+  "$COMMENTED" >> "$HOME/.codex/config.toml"
+run_dots "$COMMENTED" sync --project-only
+eq "commented header status" "0" "$STATUS"
+eq "commented header counted once" "1" "$(table_count "$COMMENTED")"
+not_contains "Codex does not trust $COMMENTED" "$OUT" "commented trusted header"
+
+# A path with a double quote must be escaped in the TOML table key.
+QUOTED="$TMPROOT/quoted\"repo"
+make_repo "$QUOTED" "git@github.com:example/quoted.git"
+printf '{"mcpServers":{"quotedsrv":{"command":"srv"}}}\n' > "$QUOTED/.mcp.json"
+run_dots "$QUOTED" sync --project-only
+eq "quoted path status" "0" "$STATUS"
+contains "codex: trusted" "$OUT" "quoted path trusted"
+if ! yq -p toml -o json '.' "$HOME/.codex/config.toml" > "$TMPROOT/quoted.json" 2>/dev/null; then
+  fail "a quoted project path left the Codex config as invalid TOML"
+fi
+eq "quoted path trust entry" "trusted" \
+  "$(jq -r --arg p "$QUOTED" '.projects[$p].trust_level // "missing"' "$TMPROOT/quoted.json")"
+
+# ── Codex config dir is created when missing ───────────────────────────────
+CODEDIR="$TMPROOT/codedir"
+make_repo "$CODEDIR" "git@github.com:example/codedir.git"
+printf '{"mcpServers":{"codirsrv":{"command":"srv"}}}\n' > "$CODEDIR/.mcp.json"
+mkdir -p "$CODEDIR/.agents/skills"
+rm -rf "$HOME/.codex"
+run_dots "$CODEDIR" sync --project-only
+eq "missing codex dir status" "0" "$STATUS"
+[ -f "$HOME/.codex/config.toml" ] || fail "codex config dir was not created"
+eq "missing codex dir trust" "trusted" \
+  "$(yq -p toml -o json '.' "$HOME/.codex/config.toml" \
+     | jq -r --arg p "$CODEDIR" '.projects[$p].trust_level // "missing"')"
+[ -L "$CODEDIR/.claude/skills" ] || fail "sync stopped after the trust write"
+
+# A config that does not parse gets a warning and no append; sync continues.
+BROKEN="$TMPROOT/broken"
+make_repo "$BROKEN" "git@github.com:example/broken.git"
+printf '{"mcpServers":{"brokensrv":{"command":"srv"}}}\n' > "$BROKEN/.mcp.json"
+mkdir -p "$BROKEN/.agents/skills"
+cp "$HOME/.codex/config.toml" "$TMPROOT/codex-good.toml"
+printf '[projects."unterminated"\n' >> "$HOME/.codex/config.toml"
+BROKEN_BEFORE="$(cksum "$HOME/.codex/config.toml")"
+run_dots "$BROKEN" sync --project-only
+eq "broken config status" "0" "$STATUS"
+contains "not valid TOML" "$OUT" "broken config warning"
+eq "broken config untouched" "$BROKEN_BEFORE" "$(cksum "$HOME/.codex/config.toml")"
+[ -L "$BROKEN/.claude/skills" ] || fail "sync stopped after a trust warning"
+cp "$TMPROOT/codex-good.toml" "$HOME/.codex/config.toml"
+
+# ── CODEX_HOME drives direct config writes ─────────────────────────────────
+CODEXHOME_REPO="$TMPROOT/codexhome-repo"
+make_repo "$CODEXHOME_REPO" "git@github.com:example/codexhome.git"
+printf '{"mcpServers":{"codexhome":{"command":"srv"}}}\n' > "$CODEXHOME_REPO/.mcp.json"
+rm -rf "$HOME/.codex"
+export CODEX_HOME="$TMPROOT/codexhome"
+run_dots "$CODEXHOME_REPO" sync --project-only
+eq "CODEX_HOME status" "0" "$STATUS"
+eq "CODEX_HOME trust" "trusted" \
+  "$(yq -p toml -o json '.' "$CODEX_HOME/config.toml" \
+     | jq -r --arg p "$CODEXHOME_REPO" '.projects[$p].trust_level // "missing"')"
+[ ! -e "$HOME/.codex/config.toml" ] || fail "CODEX_HOME was ignored for the trust write"
+unset CODEX_HOME
 
 printf 'ok: all dots agents tests passed\n'
