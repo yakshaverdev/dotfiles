@@ -177,9 +177,9 @@ esac
 # signed-in subscription, which ANTHROPIC_API_KEY would otherwise override.
 unset ANTHROPIC_API_KEY
 
-# Read one KEY=value line from the systemd EnvironmentFile without sourcing it.
+# Read one raw KEY=value line from claude-tokens.env (written by dots secret sync).
 secret_from_file() { # NAME -> value on stdout
-  local name="$1" file="$HOME/.config/dot/secrets.env" line key
+  local name="$1" file="$HOME/.config/dot/claude-tokens.env" line key
   [ -r "$file" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line%$'\r'}"

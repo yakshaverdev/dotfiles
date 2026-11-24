@@ -135,7 +135,7 @@
     ],
     "StopFailure": [
       {
-        "matcher": "rate_limit",
+        "matcher": "rate_limit|billing_error",
         "hooks": [
           {
             "type": "command",

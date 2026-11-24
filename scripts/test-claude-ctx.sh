@@ -24,7 +24,7 @@ JQ_BIN="$(command -v jq || true)"
 
 export HOME="$TMPROOT/home"
 FAKEBIN="$TMPROOT/bin"
-SECRETS="$HOME/.config/dot/secrets.env"
+SECRETS="$HOME/.config/dot/claude-tokens.env"
 STATE="$HOME/.local/state/claude-accounts"
 LOG="$STATE/failover.log"
 mkdir -p "$HOME/.config/dot" "$FAKEBIN"
@@ -93,10 +93,10 @@ now=$(date +%s)
 reset
 eq "no tokens" "CLAUDE_ACCOUNT= TOKEN= LEAK=" "$(run_ctx)"
 
-# 2. Both tokens in secrets.env: the primary (team) wins and tokens do not leak.
+# 2. Both tokens in claude-tokens.env: the primary (team) wins and tokens do not leak.
 reset
 write_secrets
-eq "secrets.env -> team" "CLAUDE_ACCOUNT=team TOKEN=tok-team LEAK=" "$(run_ctx)"
+eq "claude-tokens.env -> team" "CLAUDE_ACCOUNT=team TOKEN=tok-team LEAK=" "$(run_ctx)"
 
 # 3. Primary limited in the future: fail over to the fallback (ultra).
 reset

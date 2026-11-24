@@ -249,7 +249,9 @@ T3 keep working; on a machine that has never synced, `sync` exits 1.
 `claude-ctx` fails over between two Claude subscriptions: `team` (primary; its
 5-hour window is use-it-or-lose-it) and `ultra` (fallback). Tokens live in
 `CLAUDE_TOKEN_TEAM` and `CLAUDE_TOKEN_ULTRA` (environment first, then
-`~/.config/dot/secrets.env`). Create each with `claude setup-token` while
+`~/.config/dot/claude-tokens.env`, which `dots secret sync` writes instead of
+putting them in `secrets.zsh`/`secrets.env`, so other agents and shells never
+see them). Create each with `claude setup-token` while
 logged into that account, then:
 
 ```bash
