@@ -15,7 +15,6 @@
     "pstack@pstack-claude": true,
     "pyright-lsp@claude-plugins-official": true,
     "rust-analyzer-lsp@claude-plugins-official": true,
-    "stripe@claude-plugins-official": true,
     "typesafe@typesafe-ai": true
   },
   "extraKnownMarketplaces": {
