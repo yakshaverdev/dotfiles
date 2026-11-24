@@ -4,11 +4,9 @@
   "autoUpdatesChannel": "stable",
   "theme": "dark-ansi",
   "enabledPlugins": {
-    "avoid-ai-writing@conorbronsdon-skills": true,
     "clangd-lsp@claude-plugins-official": true,
     "cloudflare@cloudflare": true,
     "codex@openai-codex": true,
-    "humanizer@humanizer": true,
     "mattpocock-skills@claude-plugins-official": true,
     "plannotator@plannotator": true,
     "pstack@pstack-claude": true,
@@ -21,12 +19,6 @@
       "source": {
         "source": "github",
         "repo": "openai/codex-plugin-cc"
-      }
-    },
-    "humanizer": {
-      "source": {
-        "source": "github",
-        "repo": "blader/humanizer"
       }
     },
     "plannotator": {
@@ -51,12 +43,6 @@
       "source": {
         "source": "github",
         "repo": "cloudflare/skills"
-      }
-    },
-    "conorbronsdon-skills": {
-      "source": {
-        "source": "github",
-        "repo": "conorbronsdon/avoid-ai-writing"
       }
     }
   },
