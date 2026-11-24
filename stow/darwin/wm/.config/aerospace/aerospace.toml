@@ -1,17 +1,16 @@
 # AeroSpace — tiling window manager. Guide: https://nikitabobko.github.io/AeroSpace/guide
 #
-# Workspaces (alt-1 … alt-6):
-#   1  browser    Zen
-#   2  agents     T3 Code
-#   3  passwords  Bitwarden
-#   4–6           free
+# Workspaces (alt-1 … alt-9):
+#   1 browser Zen · 2 term Ghostty · 3 ade T3 Code · 4 chat Discord
+#   5 pkm Obsidian · 6 pass Bitwarden · 7–9 free (alt-n sends a window to the first free one)
 #
 # Keys (alt = option):
-#   alt-1..6            go to workspace          alt-shift-1..6   move window there (and follow)
+#   alt-1..9            go to workspace          alt-shift-1..9   move window there (and follow)
 #   alt-h/j/k/l         focus left/down/up/right alt-shift-h/j/k/l move window
 #   alt-tab             previous workspace       alt-f            fullscreen
 #   alt-/               tiles  (toggle h/v)      alt-,            accordion (toggle h/v)
 #   alt-minus/equal     shrink/grow window       alt-t            float/tile window
+#   alt-n               window → next free 7–9   alt-.            cycle windows here
 #   alt-shift-;         service mode: esc reload config · r reset layout · f float/tile ·
 #                                     backspace close other windows · alt-shift-h/j/k/l join with neighbour
 
@@ -20,7 +19,14 @@ config-version = 2
 start-at-login = true
 auto-reload-config = true
 
-after-startup-command = ['exec-and-forget sketchybar']
+# Open the six home apps at login. Rules below put each on its workspace.
+# SketchyBar starts from brew services (`dots` runs `brew services start sketchybar`).
+after-startup-command = [
+  'exec-and-forget open -ga Zen; open -ga Ghostty; open -ga "T3 Code (Beta)"; open -ga Discord; open -ga Obsidian; open -ga Bitwarden',
+]
+
+# The bar hides empty workspaces, so refresh it when focus moves.
+on-focus-changed = ['exec-and-forget sketchybar --trigger aerospace_workspace_change']
 
 exec-on-workspace-change = [
   '/bin/bash',
@@ -39,7 +45,7 @@ accordion-padding = 30
 on-focused-monitor-changed = ['move-mouse monitor-lazy-center']
 automatically-unhide-macos-hidden-apps = false
 
-persistent-workspaces = ['1', '2', '3', '4', '5', '6']
+persistent-workspaces = ['1', '2', '3', '4', '5', '6', '7', '8', '9']
 
 # Bottom gap leaves room for SketchyBar.
 gaps.inner.horizontal = 8
@@ -49,18 +55,37 @@ gaps.outer.right = 8
 gaps.outer.top = 8
 gaps.outer.bottom = 44
 
-# ── Fixed homes for the three main apps ─────────────────────────────
+# ── Browser popups (sign-in, OAuth, PiP) float on the current workspace ──
+# First match wins, so this rule must stay above the Zen workspace rule.
+[[on-window-detected]]
+if.app-id = 'app.zen-browser.zen'
+if.window-title-regex-substring = '(?i)(sign.?in|log.?in|accounts|oauth|authori[sz]e|picture-in-picture|extension)'
+run = 'layout floating'
+
+# ── Fixed homes for the six main apps ───────────────────────────────
 [[on-window-detected]]
 if.app-id = 'app.zen-browser.zen'
 run = 'move-node-to-workspace 1'
 
 [[on-window-detected]]
-if.app-id = 'com.t3tools.t3code'
+if.app-id = 'com.mitchellh.ghostty'
 run = 'move-node-to-workspace 2'
 
 [[on-window-detected]]
-if.app-id = 'com.bitwarden.desktop'
+if.app-id = 'com.t3tools.t3code'
 run = 'move-node-to-workspace 3'
+
+[[on-window-detected]]
+if.app-id = 'com.hnc.Discord'
+run = 'move-node-to-workspace 4'
+
+[[on-window-detected]]
+if.app-id = 'md.obsidian'
+run = 'move-node-to-workspace 5'
+
+[[on-window-detected]]
+if.app-id = 'com.bitwarden.desktop'
+run = 'move-node-to-workspace 6'
 
 # ── Small utility windows float instead of tiling ───────────────────
 [[on-window-detected]]
@@ -98,6 +123,9 @@ alt-3 = 'workspace 3'
 alt-4 = 'workspace 4'
 alt-5 = 'workspace 5'
 alt-6 = 'workspace 6'
+alt-7 = 'workspace 7'
+alt-8 = 'workspace 8'
+alt-9 = 'workspace 9'
 
 alt-shift-1 = 'move-node-to-workspace --focus-follows-window 1'
 alt-shift-2 = 'move-node-to-workspace --focus-follows-window 2'
@@ -105,6 +133,15 @@ alt-shift-3 = 'move-node-to-workspace --focus-follows-window 3'
 alt-shift-4 = 'move-node-to-workspace --focus-follows-window 4'
 alt-shift-5 = 'move-node-to-workspace --focus-follows-window 5'
 alt-shift-6 = 'move-node-to-workspace --focus-follows-window 6'
+alt-shift-7 = 'move-node-to-workspace --focus-follows-window 7'
+alt-shift-8 = 'move-node-to-workspace --focus-follows-window 8'
+alt-shift-9 = 'move-node-to-workspace --focus-follows-window 9'
+
+# Send the focused window to the first empty workspace from 7–9 and follow it.
+alt-n = '''exec-and-forget for w in 7 8 9; do [ -z "$(aerospace list-windows --workspace $w)" ] && aerospace move-node-to-workspace --focus-follows-window $w && break; done'''
+
+# Cycle focus through every window on this workspace, floating ones too.
+alt-period = 'focus dfs-next --boundaries-action wrap-around-the-workspace'
 
 alt-h = 'focus left'
 alt-j = 'focus down'

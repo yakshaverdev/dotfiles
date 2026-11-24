@@ -381,9 +381,12 @@ Wallpapers are generated from the palette with `wallpapers/generate.sh`.
 
 ## AeroSpace (macOS)
 
-Six workspaces. Zen opens on 1, T3 Code on 2, Bitwarden on 3; 4–6 are free.
-`alt-1..6` switches, `alt-shift-1..6` moves the window, `alt-h/j/k/l` focuses,
-`alt-shift-h/j/k/l` moves, `alt-f` fullscreen, `alt-tab` previous workspace.
+Nine workspaces. Zen opens on 1, Ghostty on 2, T3 Code on 3, Discord on 4,
+Obsidian on 5, Bitwarden on 6; 7–9 are free.
+`alt-1..9` switches, `alt-shift-1..9` moves the window, `alt-n` sends the window
+to the first empty workspace in 7–9, `alt-h/j/k/l` focuses, `alt-.` cycles the
+windows on a workspace, `alt-shift-h/j/k/l` moves, `alt-f` fullscreen,
+`alt-tab` previous workspace.
 The full key list is at the top of `stow/darwin/wm/.config/aerospace/aerospace.toml`.
 `scripts/macos-defaults.sh` turns off the macOS features that fight a tiling
 window manager (Stage Manager, edge tiling, click-wallpaper-to-show-desktop,
