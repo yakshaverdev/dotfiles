@@ -1360,7 +1360,8 @@ skills_sync_plugins() {
         warn "plugin entry without source: $entry"
         continue
       fi
-      if opencode plugin list < /dev/null 2>/dev/null \
+      # 2>&1: OpenCode prints the plugin table to stderr on some machines.
+      if opencode plugin list < /dev/null 2>&1 \
           | awk -v id="$id" '$1 == id { found = 1 } END { exit !found }'; then
         info "  opencode: $id installed"
         continue
