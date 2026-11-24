@@ -3,8 +3,8 @@
 # never failing.
 
 # ~/.local/bin (dots, claude-ctx, standalone codex and claude) for every
-# shell, including `ssh host cmd`.
-[[ -d "$HOME/.local/bin" ]] && path=("$HOME/.local/bin" $path)
+# shell, including `ssh host cmd`. Appended, so it never shadows Homebrew.
+[[ -d "$HOME/.local/bin" ]] && path=($path "$HOME/.local/bin")
 
 # mise shims, so non-interactive shells (ssh commands, T3 device hosts)
 # find node/npm and other mise tools without ~/.zshrc.
