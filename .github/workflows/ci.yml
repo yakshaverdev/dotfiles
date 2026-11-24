@@ -46,6 +46,8 @@ jobs:
         run: bash scripts/test-dots-secret-ctx.sh
       - name: dots version helper tests
         run: bash scripts/test-dots-version.sh
+      - name: dots doctor tests
+        run: bash scripts/test-dots-doctor.sh
       - name: git config parses
         run: git config --file stow/common/git/.config/git/config --list >/dev/null
 

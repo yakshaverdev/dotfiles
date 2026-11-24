@@ -548,22 +548,85 @@ cmd_install() {
   return 0
 }
 
+# ── doctor helpers ─────────────────────────────────────────────────────────
+# Join at most $1 words with ", " and summarize the rest as "(+N more)".
+doctor_join_words() { # max word...
+  local max="$1" out="" n=0 w
+  shift
+  for w in "$@"; do
+    if ((n < max)); then
+      out="${out:+$out, }$w"
+    fi
+    n=$((n + 1))
+  done
+  if ((n > max)); then
+    out="$out (+$((n - max)) more)"
+  fi
+  printf '%s\n' "$out"
+}
+
+# True when a TOML file has the exact table header (trailing spaces ignored).
+doctor_toml_table() { # file header
+  [[ -f "$1" ]] || return 1
+  awk -v target="$2" '
+    { line = $0; sub(/[[:space:]]+$/, "", line) }
+    line == target { found = 1; exit }
+    END { exit found ? 0 : 1 }
+  ' "$1"
+}
+
+# Codex trusts a project when ~/.codex/config.toml has its path with
+# trust_level = "trusted". This mirrors agents_codex_project_trusted in
+# bin/dots-agents for one path, so doctor does not source that whole CLI.
+doctor_codex_trusted() { # path
+  local cfg="$HOME/.codex/config.toml"
+  [[ -f "$cfg" ]] || return 1
+  awk -v target="[projects.\"$1\"]" '
+    /^\[/ {
+      if (found) exit
+      if ($0 == target) { found = 1 }
+      next
+    }
+    found && /^[[:space:]]*trust_level[[:space:]]*=[[:space:]]*"trusted"/ { ok = 1; exit }
+    END { exit ok ? 0 : 1 }
+  ' "$cfg"
+}
+
+# A Codex plugin counts as installed when its config table exists or its cache
+# directory is present (the same signals `codex plugin list` reports).
+doctor_codex_plugin() { # plugin-id (name@marketplace)
+  local id="$1" name market
+  doctor_toml_table "$HOME/.codex/config.toml" "[plugins.\"$id\"]" && return 0
+  name="${id%@*}"
+  market="${id#*@}"
+  if [[ "$market" == "$id" ]]; then
+    market=""
+  fi
+  [[ -d "$HOME/.codex/plugins/cache/$market/$name" ]] && return 0
+  [[ -d "$HOME/.codex/plugins/$id" ]] && return 0
+  return 1
+}
+
 # ── doctor ─────────────────────────────────────────────────────────────────
 cmd_doctor() {
-  if (($#)); then
+  local local_only=0
+  while (($#)); do
     case "$1" in
+      --local) local_only=1 ;;
       -h|--help)
-        info "usage: dots doctor"
+        info "usage: dots doctor [--local]"
         info "  Health check (may contact Infisical and refresh token caches)."
+        info "  --local skips every check that contacts a network service."
         return 0
         ;;
       *)
         err "dots doctor does not accept: $1"
-        info "usage: dots doctor"
+        info "usage: dots doctor [--local]"
         return 1
         ;;
     esac
-  fi
+    shift
+  done
   local problems=0 warnings=0
   ok()   { printf '  ✓ %s\n' "$*"; }
   bad()  { printf '  ✗ %s\n' "$*"; problems=$((problems + 1)); }
@@ -630,6 +693,234 @@ cmd_doctor() {
       note "$c not found (install it with its own installer)"
     fi
   done
+
+  # Agent skills: every manifest name must exist under ~/.agents/skills and be
+  # reachable from ~/.claude/skills (a directory or a symlink that resolves).
+  info "→ Agent skills"
+  local skill_total=0 skill
+  local -a skill_missing=() skill_unlinked=()
+  if [[ ! -f "$AGENT_SKILLS_MANIFEST" ]]; then
+    note "packages/agent-skills not found — skill checks skipped"
+  else
+    while IFS= read -r skill; do
+      [[ -n "$skill" ]] || continue
+      skill_total=$((skill_total + 1))
+      if [[ ! -d "$HOME/.agents/skills/$skill" ]]; then
+        skill_missing+=("$skill")
+      elif [[ ! -d "$HOME/.claude/skills/$skill" ]]; then
+        skill_unlinked+=("$skill")
+      fi
+    done < <(manifest_skill_names)
+    if ((skill_total == 0)); then
+      note "packages/agent-skills lists no skills"
+    else
+      if ((${#skill_missing[@]})); then
+        bad "not installed in ~/.agents/skills: $(doctor_join_words 10 "${skill_missing[@]}") (run: dots skills sync)"
+      fi
+      if ((${#skill_unlinked[@]})); then
+        bad "not linked into ~/.claude/skills: $(doctor_join_words 10 "${skill_unlinked[@]}") (run: dots skills sync)"
+      fi
+      if ((${#skill_missing[@]} == 0 && ${#skill_unlinked[@]} == 0)); then
+        ok "$skill_total skills present and linked"
+      fi
+    fi
+  fi
+
+  # Agent plugins: Codex config table or cache dir, OpenCode plugin array, and
+  # the Claude plugins enabled in the tracked settings.
+  info "→ Agent plugins"
+  local p_entry p_agent p_rest p_id p_source oc_cfg
+  oc_cfg="$HOME/.config/opencode/opencode.json"
+  if [[ ! -f "$AGENT_PLUGINS_MANIFEST" ]]; then
+    note "packages/agent-plugins not found — plugin checks skipped"
+  else
+    while IFS= read -r p_entry; do
+      p_agent="${p_entry%% *}"
+      p_rest="${p_entry#* }"
+      if [[ "$p_rest" == "$p_entry" ]]; then
+        note "malformed plugin entry: $p_entry"
+        continue
+      fi
+      p_id="${p_rest%% *}"
+      p_source="${p_rest#* }"
+      if [[ "$p_source" == "$p_rest" ]]; then
+        p_source=""
+      fi
+      case "$p_agent" in
+        codex)
+          if doctor_codex_plugin "$p_id"; then
+            ok "codex: $p_id"
+          else
+            bad "codex: $p_id not installed (run: dots skills sync)"
+          fi
+          ;;
+        opencode)
+          if ! have jq; then
+            note "jq not found — OpenCode plugin $p_id unchecked"
+          elif [[ ! -f "$oc_cfg" ]]; then
+            note "$HOME/.config/opencode/opencode.json not found — OpenCode plugin $p_id unchecked"
+          # OpenCode documents .plugin; older writes used .plugins.
+          elif jq -e --arg s "$p_source" \
+              '((.plugin // .plugins // []) | index($s)) != null' \
+              "$oc_cfg" >/dev/null 2>&1; then
+            ok "opencode: $p_id"
+          else
+            bad "opencode: $p_id missing from $oc_cfg .plugin (run: dots skills sync)"
+          fi
+          ;;
+        *)
+          note "unknown plugin agent in manifest: $p_agent"
+          ;;
+      esac
+    done < <(manifest_rows "$AGENT_PLUGINS_MANIFEST")
+  fi
+
+  # Claude Code plugins: every enabled one must be in installed_plugins.json.
+  local claude_settings claude_installed p_enabled p_name
+  local -a claude_missing=()
+  claude_settings="$DOTFILES/stow/common/claude/.claude/settings.json"
+  claude_installed="$HOME/.claude/plugins/installed_plugins.json"
+  if ! have jq; then
+    note "jq not found — Claude plugins unchecked"
+  elif [[ ! -f "$claude_settings" ]]; then
+    note "stow/common/claude/.claude/settings.json not found — Claude plugins unchecked"
+  elif [[ ! -f "$claude_installed" ]]; then
+    note "$HOME/.claude/plugins/installed_plugins.json not found — Claude plugins unchecked"
+  else
+    if ! p_enabled="$(jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' \
+        "$claude_settings" 2>/dev/null)"; then
+      note "cannot read $claude_settings — Claude plugins unchecked"
+      p_enabled=""
+    fi
+    while IFS= read -r p_name; do
+      [[ -n "$p_name" ]] || continue
+      if jq -e --arg p "$p_name" '(.plugins // {}) | has($p)' \
+          "$claude_installed" >/dev/null 2>&1; then
+        ok "claude: $p_name"
+      else
+        claude_missing+=("$p_name")
+      fi
+    done <<< "$p_enabled"
+    if ((${#claude_missing[@]})); then
+      bad "claude: not installed: $(doctor_join_words 10 "${claude_missing[@]}") (run: dots skills sync)"
+    fi
+  fi
+
+  # MCP servers: config/agents/mcp.json is the source, so each name must reach
+  # all three clients. Never run `claude mcp list` here: it contacts servers.
+  info "→ MCP servers"
+  local mcp_file mcp_names mcp_name mcp_missing mcp_checked
+  local claude_cfg_ok=1 codex_cfg_ok=1 oc_cfg_ok=1
+  mcp_file="$DOTFILES/config/agents/mcp.json"
+  if ! have jq; then
+    note "jq not found — MCP checks skipped"
+  elif [[ ! -f "$mcp_file" ]]; then
+    note "config/agents/mcp.json not found — MCP checks skipped"
+  else
+    if ! mcp_names="$(jq -r '.mcpServers // {} | keys[]' "$mcp_file" 2>/dev/null)"; then
+      note "cannot read $mcp_file — MCP checks skipped"
+    elif [[ -z "$mcp_names" ]]; then
+      note "config/agents/mcp.json lists no servers"
+    else
+      if [[ ! -f "$HOME/.claude.json" ]]; then
+        note "$HOME/.claude.json not found — Claude MCP servers unchecked"
+        claude_cfg_ok=0
+      fi
+      if [[ ! -f "$HOME/.codex/config.toml" ]]; then
+        note "$HOME/.codex/config.toml not found — Codex MCP servers unchecked"
+        codex_cfg_ok=0
+      fi
+      if [[ ! -f "$oc_cfg" ]]; then
+        note "$HOME/.config/opencode/opencode.json not found — OpenCode MCP servers unchecked"
+        oc_cfg_ok=0
+      fi
+      while IFS= read -r mcp_name; do
+        [[ -n "$mcp_name" ]] || continue
+        mcp_missing=""
+        mcp_checked=""
+        if ((claude_cfg_ok)); then
+          mcp_checked="${mcp_checked:+$mcp_checked, }Claude"
+          jq -e --arg n "$mcp_name" '(.mcpServers // {}) | has($n)' \
+            "$HOME/.claude.json" >/dev/null 2>&1 || mcp_missing="${mcp_missing:+$mcp_missing, }Claude"
+        fi
+        if ((codex_cfg_ok)); then
+          mcp_checked="${mcp_checked:+$mcp_checked, }Codex"
+          doctor_toml_table "$HOME/.codex/config.toml" "[mcp_servers.$mcp_name]" \
+            || mcp_missing="${mcp_missing:+$mcp_missing, }Codex"
+        fi
+        if ((oc_cfg_ok)); then
+          mcp_checked="${mcp_checked:+$mcp_checked, }OpenCode"
+          jq -e --arg n "$mcp_name" '(.mcp // {}) | has($n)' \
+            "$oc_cfg" >/dev/null 2>&1 || mcp_missing="${mcp_missing:+$mcp_missing, }OpenCode"
+        fi
+        if [[ -z "$mcp_checked" ]]; then
+          note "$mcp_name: no client config found"
+        elif [[ -z "$mcp_missing" ]]; then
+          ok "$mcp_name ($mcp_checked)"
+        else
+          bad "$mcp_name missing from: $mcp_missing"
+        fi
+      done <<< "$mcp_names"
+    fi
+  fi
+
+  # Trust for the current directory: Codex ignores project config until its
+  # path is trusted, and mise ignores untrusted config files.
+  info "→ Trust"
+  local repo_top git_common main_root mise_cfg MISE_TRUST trust_dir
+  repo_top="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -z "$repo_top" ]]; then
+    note "not inside a git repo — skipped"
+  else
+    git_common="$(git -C "$repo_top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    if [[ -z "$git_common" ]]; then
+      git_common="$(git -C "$repo_top" rev-parse --git-common-dir 2>/dev/null || true)"
+      case "$git_common" in
+        ""|/*) ;;
+        *) git_common="$repo_top/$git_common" ;;
+      esac
+    fi
+    if [[ -z "$git_common" ]]; then
+      main_root="$repo_top"
+    else
+      main_root="$(dirname "$git_common")"
+    fi
+    if [[ ! -f "$HOME/.codex/config.toml" ]]; then
+      note "$HOME/.codex/config.toml not found — Codex trust unchecked"
+    elif trust_dir="$main_root"; while [[ "$trust_dir" != / ]] && ! doctor_codex_trusted "$trust_dir"; do trust_dir="$(dirname "$trust_dir")"; done; [[ "$trust_dir" != / ]]; then
+      # Codex trust on a parent folder covers the repo too.
+      ok "codex trusts $main_root (via $trust_dir)"
+    else
+      bad "codex does not trust $main_root (run: dots agents sync)"
+    fi
+
+    mise_cfg=""
+    if [[ -f "$repo_top/mise.toml" ]]; then
+      mise_cfg="$repo_top/mise.toml"
+    elif [[ -f "$repo_top/.mise.toml" ]]; then
+      mise_cfg="$repo_top/.mise.toml"
+    fi
+    if [[ -z "$mise_cfg" ]]; then
+      ok "no mise config in this repo"
+    elif ! MISE_TRUST="$(mise_bin)"; then
+      note "mise not installed — mise trust unchecked"
+    elif (cd "$repo_top" && "$MISE_TRUST" trust --show 2>/dev/null) |
+        grep -qxF -e "$repo_top: trusted" -e "~${repo_top#"$HOME"}: trusted"; then
+      ok "mise trusts $mise_cfg"
+    else
+      bad "mise does not trust $mise_cfg (run: mise trust)"
+    fi
+  fi
+
+  # tmux plugins: the tracked config runs TPM, so its clone must exist.
+  info "→ tmux plugins"
+  if ! have tmux; then
+    note "tmux not installed — skipped"
+  elif [[ -d "$HOME/.tmux/plugins/tpm" ]]; then
+    ok "TPM installed"
+  else
+    bad "$HOME/.tmux/plugins/tpm missing (run: dots install)"
+  fi
 
   # Login shell
   info "→ Login shell"
@@ -753,9 +1044,11 @@ cmd_doctor() {
     ok "T3 Code not installed here"
   fi
 
-  # Secrets
+  # Secrets (contacts Infisical, so --local skips it)
   info "→ Secrets"
-  if [[ -f "$HOME/.config/dot/infisical.env" ]]; then
+  if ((local_only)); then
+    note "skipped (--local)"
+  elif [[ -f "$HOME/.config/dot/infisical.env" ]]; then
     if "$DOTFILES/bin/dots-secret" doctor >/dev/null 2>&1; then
       ok "dots secret doctor"
     else
@@ -1174,7 +1467,7 @@ Usage: dots <command>
 
 Commands:
   install   Bootstrap/refresh this machine (stow, packages, mise, git, T3)
-  doctor    Health check (may contact Infisical)
+  doctor    Health check (may contact Infisical); --local skips network checks
   t3 pull   Copy live T3 Code settings into the repo
   t3 push   Apply repo T3 Code settings to the live app
   t3 diff   Show differences between live and tracked T3 settings
