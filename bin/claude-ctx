@@ -171,6 +171,7 @@ case "${1:-}" in
     ;;
 esac
 
+# shellcheck source=/dev/null
 [[ -r "$HOME/.config/zsh/contexts.bash" ]] && source "$HOME/.config/zsh/contexts.bash"
 # Project API credentials are for project tools. Claude itself uses the
 # signed-in subscription, which ANTHROPIC_API_KEY would otherwise override.
