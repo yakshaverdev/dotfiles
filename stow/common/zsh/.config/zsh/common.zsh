@@ -104,11 +104,13 @@ _cached_eval starship starship 'starship init zsh' || true
 # Eagerly activated so shebang scripts (e.g. #!/usr/bin/env node) resolve
 # through mise shims via raw PATH — lazy-load wouldn't fire for those.
 # _sfw_wrap runs later (below) and overlays sfw on top of mise's shims.
+# Call the binary, not the `mise` function an earlier activate defined: that
+# function holds the old binary's path, which breaks a re-source after the
+# binary moves. rehash drops stale path lookups first.
 if [[ -o interactive ]]; then
-  if command -v mise >/dev/null 2>&1; then
-    eval "$(mise activate zsh)"
-  elif [[ -x "$HOME/.local/bin/mise" ]]; then
-    eval "$("$HOME/.local/bin/mise" activate zsh)"
+  rehash
+  if [[ -n ${commands[mise]:-} ]]; then
+    eval "$("${commands[mise]}" activate zsh)"
   fi
 fi
 
