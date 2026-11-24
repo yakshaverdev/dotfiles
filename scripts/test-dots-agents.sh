@@ -383,7 +383,7 @@ not_contains '${CLIENT_TOKEN}' "$(tail -n 5 "$TEST_LOG/claude.log")" \
   "claude local unresolved ref"
 not_contains 'resolved-shovel-token' "$(cat "$STATE")" "state holds a resolved secret"
 eq "project local hash recorded" "64" \
-  "$(jq -r --arg k "claude-local:$REPO" '.targets[$k].hashes.client | length' "$STATE")"
+  "$(jq -r --arg k "claude-local:$(cd "$REPO" && pwd -P)" '.targets[$k].hashes.client | length' "$STATE")"
 
 PCODEX="$REPO/.codex/config.toml"
 POPEN="$REPO/opencode.json"
