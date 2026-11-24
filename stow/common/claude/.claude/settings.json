@@ -69,9 +69,9 @@
     }
   },
   "agentPushNotifEnabled": true,
-  "autoCompactWindow": 300000,
+  "autoCompactWindow": 400000,
   "effortLevel": "medium",
-  "model": "opus",
+  "model": "opus[1m]",
   "modelSettings": {
     "claude-opus-5-5": {
       "effortLevel": "medium"
@@ -80,5 +80,44 @@
       "effortLevel": "medium"
     }
   },
-  "tui": "fullscreen"
+  "tui": "fullscreen",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ ! -f \"$HOME/.claude/skills/impeccable/scripts/impeccable\" ] || \"$HOME/.claude/skills/impeccable/scripts/impeccable\" hook",
+            "timeout": 5,
+            "statusMessage": "Preparing build session"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ ! -f \"$HOME/.claude/skills/impeccable/scripts/impeccable\" ] || \"$HOME/.claude/skills/impeccable/scripts/impeccable\" hook",
+            "timeout": 5,
+            "statusMessage": "Checking UI changes"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ ! -f \"$HOME/.claude/skills/impeccable/scripts/impeccable\" ] || \"$HOME/.claude/skills/impeccable/scripts/impeccable\" hook",
+            "timeout": 30,
+            "statusMessage": "Design deep pass"
+          }
+        ]
+      }
+    ]
+  }
 }

@@ -6,6 +6,10 @@
 idiomatic_version_file_enable_tools = ["python"]
 activate_aggressive = true
 lockfile = true
+# Installs read the lockfile but never rewrite it. Update it only with
+# `mise lock -g -p linux-x64,macos-arm64`, so one machine cannot drop the
+# other machine's entries.
+locked = true
 
 [tools]
 # ─── Runtimes ───────────────────────────────────────────────────

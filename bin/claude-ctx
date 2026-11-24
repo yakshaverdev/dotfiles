@@ -4,4 +4,7 @@
 # ~/.zshenv never run for them. Apply the client context for the thread's
 # working directory here, so Claude and every MCP server it starts inherit it.
 [[ -r "$HOME/.config/zsh/contexts.bash" ]] && source "$HOME/.config/zsh/contexts.bash"
+# Project API credentials are for project tools. Claude itself uses the
+# signed-in subscription, which ANTHROPIC_API_KEY would otherwise override.
+unset ANTHROPIC_API_KEY
 exec claude "$@"

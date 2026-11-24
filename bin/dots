@@ -677,7 +677,7 @@ t3_require() {
 }
 
 filter_settings() {
-  jq -S 'del(.projectSettingsOverrides, .projectAutoPullOverrides, .sourceControlHosts) | del(.providerInstances[]?.config?.serverPassword)'
+  jq -S 'del(.projectSettingsOverrides, .projectAutoPullOverrides, .sourceControlHosts, .deviceHosts) | del(.providerInstances[]?.config?.serverPassword)'
 }
 
 cmd_t3() {

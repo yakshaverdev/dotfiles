@@ -101,7 +101,9 @@ mise lock -g -p linux-x64,macos-arm64   # lock for both machines
 mise install
 ```
 
-Commit `config.toml` and `mise.lock` together. Anything that is not
+Commit `config.toml` and `mise.lock` together. `locked = true` makes
+`mise install` read the lockfile without rewriting it, so lock before you
+install; an install fails when the lockfile has no entry for this platform. Anything that is not
 available through mise (GUI apps, system daemons) belongs in `packages/Brewfile`
 or `packages/apt.txt` instead.
 
