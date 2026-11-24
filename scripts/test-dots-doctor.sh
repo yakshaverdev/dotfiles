@@ -202,7 +202,7 @@ git -C "$D_REPO" commit -qm init
 mkdir -p "$TMPROOT/codexhome"
 printf '[projects."%s"]   # trusted by hand\ntrust_level = "trusted"\n' "$TMPROOT" \
   > "$TMPROOT/codexhome/config.toml"
-out="$( cd "$D_REPO" && CODEX_HOME="$TMPROOT/codexhome" "$DOTS" doctor --local 2>&1 || true )"
+out="$( cd "$D_REPO" && CODEX_HOME="$TMPROOT/codexhome" "$DOTS" doctor --local 2>&1 )" || true
 section="$(section_of "$out" "Trust")"
 contains "codex trusts" "$section" "CODEX_HOME is read for Codex trust"
 not_contains "Codex trust unchecked" "$section" "CODEX_HOME config was found"
@@ -286,11 +286,11 @@ run_npm_helper() { # version
   (
     eval "$(sed -n '/^# BEGIN version_ge$/,/^# END version_ge$/p' "$DOTS")"
     eval "$(sed -n '/^# BEGIN npm_cooldown_upgrade$/,/^# END npm_cooldown_upgrade$/p' "$DOTS")"
-    # shellcheck disable=SC2329 # called by ensure_npm_version
+    # shellcheck disable=SC2317,SC2329 # called by ensure_npm_version
     info() { printf '%s\n' "$*"; }
-    # shellcheck disable=SC2329 # called by ensure_npm_version
+    # shellcheck disable=SC2317,SC2329 # called by ensure_npm_version
     warn() { printf 'WARN: %s\n' "$*" >&2; }
-    # shellcheck disable=SC2329 # called by ensure_npm_version
+    # shellcheck disable=SC2317,SC2329 # called by ensure_npm_version
     fail() { printf 'FAILED: %s\n' "$*"; }
     ensure_npm_version "$1"
   )
