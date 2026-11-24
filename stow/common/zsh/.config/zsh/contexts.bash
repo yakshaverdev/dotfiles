@@ -30,7 +30,7 @@ _dots_bash_ctx_mode() {
 
 _dots_bash_ctx_apply() {
   local _markers _line _name _project _mode _patterns _had_e=0 _had_u=0
-  local _new=personal _top _url _i _pat _old _mode_old _mode_new _ctxdir
+  local _new=personal _top _url _i _pat _old _mode_new _ctxdir
   local -a _pats=()
 
   # Only agent command shells, and only when non-interactive.
@@ -112,12 +112,12 @@ _dots_bash_ctx_apply() {
   _ctxdir="$HOME/.config/dot/ctx"
   _old=${DOT_CTX:-}
 
-  # Drop an inherited context's names, and restore personal values when the
-  # old context was strict (matching the zsh hook).
+  # Drop an inherited context's names, then restore personal values for any
+  # client context: a merge context may have overridden them (matching the
+  # zsh hook).
   if [[ -n $_old ]]; then
     _dots_bash_ctx_unset_names "$_ctxdir/$_old.names"
-    _mode_old=$(_dots_bash_ctx_mode "$_old")
-    if [[ $_mode_old == strict && -r "$HOME/.config/dot/secrets.zsh" ]]; then
+    if [[ -r "$HOME/.config/dot/secrets.zsh" ]]; then
       # shellcheck disable=SC1090,SC1091
       source "$HOME/.config/dot/secrets.zsh" 2>/dev/null || true
     fi

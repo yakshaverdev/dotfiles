@@ -93,7 +93,9 @@ _dots_ctx_apply() {
 
   if [[ $old != personal ]]; then
     _dots_ctx_unset_names "$HOME/.config/dot/ctx/$old.names"
-    if [[ $(_dots_ctx_mode "$old") == strict && -r "$HOME/.config/dot/secrets.zsh" ]]; then
+    # Re-source personal values for any client context: a merge context may
+    # have overridden them, and unsetting alone would lose those keys.
+    if [[ -r "$HOME/.config/dot/secrets.zsh" ]]; then
       source "$HOME/.config/dot/secrets.zsh"
     fi
   fi
