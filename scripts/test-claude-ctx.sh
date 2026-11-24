@@ -142,8 +142,9 @@ printf '{"hook_event_name":"StopFailure"}\n' | run_ctx __limit
 unset CLAUDE_ACCOUNT
 [ -r "$STATE/ultra.limited" ] || fail "__limit wrote no ultra.limited"
 limit_end=$(cat "$STATE/ultra.limited")
-[ "$limit_end" -ge "$((now + 1780))" ] && [ "$limit_end" -le "$((now + 1820))" ] ||
+if [ "$limit_end" -lt "$((now + 1780))" ] || [ "$limit_end" -gt "$((now + 1820))" ]; then
   fail "__limit wrote $limit_end, expected about $((now + 1800))"
+fi
 
 # 8b. __limit uses the window at 100%, else the earliest reset (not the weekly one).
 reset
