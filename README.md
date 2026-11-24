@@ -14,7 +14,7 @@ CLI tools and runtimes are installed with [mise](https://mise.jdx.dev/).
 ```bash
 git clone https://github.com/yakshaverdev/dotfiles ~/Code/personal/dotfiles
 cd ~/Code/personal/dotfiles
-cp .env.example ~/.env && $EDITOR ~/.env   # fill in real values
+cp .env.example ~/.env && $EDITOR ~/.env   # git identity only
 ./bootstrap
 ```
 
@@ -61,7 +61,7 @@ stow --no-folding -d "$DOTFILES/stow/<group>" -t "$HOME" <pkg>
 | Command | What it does |
 |---|---|
 | `dots install` | Idempotent bootstrap/refresh: packages, mise, legacy cleanup, stow, git identity, hooks, services, T3 push, `~/.local/bin/dots` symlink |
-| `dots doctor` | Read-only health check: symlinks, commands, login shell, mise tools, packages, git identity, T3 drift, secrets contexts |
+| `dots doctor` | Health check: symlinks, commands, login shell, mise tools, packages, git identity, T3 drift, secrets contexts. It also contacts Infisical and may refresh token caches. |
 | `dots t3 pull` | Copy live T3 Code settings into `t3/` |
 | `dots t3 push` | Apply `t3/` settings to the live T3 Code install |
 | `dots t3 diff` | Diff live vs tracked T3 settings |

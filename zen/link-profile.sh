@@ -30,7 +30,10 @@ if [[ ! -f "$ZEN_DIR/profiles.ini" ]]; then
   exit 0
 fi
 
-mapfile -t PROFILE_PATHS < <(awk -F= '/^Path=/ {print $2}' "$ZEN_DIR/profiles.ini")
+PROFILE_PATHS=()
+while IFS= read -r profile_rel; do
+  [[ -n "$profile_rel" ]] && PROFILE_PATHS+=("$profile_rel")
+done < <(awk -F= '/^Path=/ {print $2}' "$ZEN_DIR/profiles.ini")
 
 if [[ ${#PROFILE_PATHS[@]} -eq 0 ]]; then
   echo "No profiles found in profiles.ini."
@@ -49,7 +52,8 @@ sync_one() {
     return 0
   fi
   if [[ -e "$target" && ! -L "$target" ]] && ! cmp -s "$source" "$target"; then
-    local backup="${target}.pre-tn-storm.$(date +%s)"
+    local backup
+    backup="${target}.pre-tn-storm.$(date +%s)"
     cp "$target" "$backup"
     echo "    backed up existing $(basename "$target") → $(basename "$backup")"
   fi

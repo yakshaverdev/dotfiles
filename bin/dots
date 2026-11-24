@@ -51,6 +51,23 @@ fail() { FAILURES+=("$*"); }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# BEGIN version_ge
+# Compare dotted numeric versions. Exit 0 when $1 >= $2.
+version_ge() {
+  local i x y
+  local -a a=() b=()
+  IFS=. read -r -a a <<< "${1%%-*}"
+  IFS=. read -r -a b <<< "${2%%-*}"
+  for ((i = 0; i < ${#a[@]} || i < ${#b[@]}; i++)); do
+    x="${a[i]:-0}"
+    y="${b[i]:-0}"
+    ((10#$x > 10#$y)) && return 0
+    ((10#$x < 10#$y)) && return 1
+  done
+  return 0
+}
+# END version_ge
+
 # Ensure ~/.npmrc carries the npm release cooldown. The file also holds a
 # private auth token and machine-specific prefix, so it is never tracked and
 # this function never prints or rewrites its existing lines.
@@ -149,6 +166,20 @@ find_legacy_links() {
 
 # ── install ────────────────────────────────────────────────────────────────
 cmd_install() {
+  if (($#)); then
+    case "$1" in
+      -h|--help)
+        info "usage: dots install"
+        info "  Bootstrap/refresh this machine (stow, packages, mise, git, T3)."
+        return 0
+        ;;
+      *)
+        err "dots install does not accept: $1"
+        info "usage: dots install"
+        return 1
+        ;;
+    esac
+  fi
   info "=== dots install (${OS}) ==="
 
   # 1. ~/.env
@@ -391,7 +422,15 @@ cmd_install() {
   # 8. mise install (non-fatal)
   if [[ -n "$MISE" ]]; then
     info "→ mise install..."
-    if ! "$MISE" install --yes 2>&1 | sed 's/^/  /'; then
+    if "$MISE" install --yes 2>&1 | sed 's/^/  /'; then
+      # Later steps (npx, OpenCode plugin add, dots-agents) need mise's tools,
+      # but a fresh install has not put its shims on this shell's PATH yet.
+      if [[ -d "$HOME/.local/share/mise/shims" ]]; then
+        PATH="$HOME/.local/share/mise/shims:$PATH"
+        export PATH
+        hash -r
+      fi
+    else
       fail "mise install"
     fi
   else
@@ -405,6 +444,16 @@ cmd_install() {
   # 8b. Agent MCP servers (global; project sync runs inside a repo)
   info "→ Agent MCP servers..."
   "$DOTFILES/bin/dots-agents" sync --global-only || fail "dots agents sync"
+
+  # 8c. tmux plugins (.tmux.conf runs TPM; resurrect/continuum need it)
+  if have tmux && [[ ! -d "$HOME/.tmux/plugins/tpm" ]]; then
+    info "→ tmux plugin manager (TPM)..."
+    if git clone -q --depth 1 https://github.com/tmux-plugins/tpm "$HOME/.tmux/plugins/tpm"; then
+      "$HOME/.tmux/plugins/tpm/bin/install_plugins" >/dev/null 2>&1 || fail "tmux plugins install"
+    else
+      fail "TPM clone"
+    fi
+  fi
 
   # 9. bat cache + git hooks
   if have bat; then
@@ -493,10 +542,28 @@ cmd_install() {
     info "Manual steps remaining:"
     for m in "${MANUAL[@]}"; do info "  - $m"; done
   fi
+  if ((${#FAILURES[@]})); then
+    return 1
+  fi
+  return 0
 }
 
 # ── doctor ─────────────────────────────────────────────────────────────────
 cmd_doctor() {
+  if (($#)); then
+    case "$1" in
+      -h|--help)
+        info "usage: dots doctor"
+        info "  Health check (may contact Infisical and refresh token caches)."
+        return 0
+        ;;
+      *)
+        err "dots doctor does not accept: $1"
+        info "usage: dots doctor"
+        return 1
+        ;;
+    esac
+  fi
   local problems=0 warnings=0
   ok()   { printf '  ✓ %s\n' "$*"; }
   bad()  { printf '  ✗ %s\n' "$*"; problems=$((problems + 1)); }
@@ -643,8 +710,17 @@ cmd_doctor() {
 
   # npm supply-chain cooldown
   info "→ npm cooldown"
+  local npm_ver="" has_cooldown=0
+  npm_ver="$(npm --version 2>/dev/null || true)"
   if [[ -f "$HOME/.npmrc" ]] && grep -qE '^[[:space:]]*min-release-age[[:space:]]*=' "$HOME/.npmrc"; then
-    ok "$HOME/.npmrc has min-release-age"
+    has_cooldown=1
+  fi
+  if [[ -z "$npm_ver" ]]; then
+    note "npm not found — cannot confirm min-release-age support"
+  elif ! version_ge "$npm_ver" 11.10.0; then
+    note "npm $npm_ver ignores min-release-age (needs >= 11.10.0); cooldown inactive"
+  elif ((has_cooldown)); then
+    ok "$HOME/.npmrc has min-release-age (npm $npm_ver)"
   else
     bad "$HOME/.npmrc missing min-release-age (run: dots install)"
   fi
@@ -771,6 +847,10 @@ cmd_t3() {
       return "$rc"
       ;;
     *)
+      if [[ "$action" == "-h" || "$action" == "--help" ]]; then
+        info "usage: dots t3 pull|push|diff"
+        return 0
+      fi
       err "usage: dots t3 pull|push|diff"
       return 1
       ;;
@@ -1078,11 +1158,13 @@ cmd_skills() {
   esac
   # `fail` only records, so a standalone run must print the reasons here.
   if ((${#FAILURES[@]} > failures_before)); then
-    warn "skills ${action} had ${#FAILURES[@]} failure(s):"
+    warn "skills ${action} had $((${#FAILURES[@]} - failures_before)) failure(s):"
     for ((i = failures_before; i < ${#FAILURES[@]}; i++)); do
       info "  - ${FAILURES[i]}"
     done
+    return 1
   fi
+  return 0
 }
 
 # ── main ───────────────────────────────────────────────────────────────────
@@ -1092,7 +1174,7 @@ Usage: dots <command>
 
 Commands:
   install   Bootstrap/refresh this machine (stow, packages, mise, git, T3)
-  doctor    Read-only health check
+  doctor    Health check (may contact Infisical)
   t3 pull   Copy live T3 Code settings into the repo
   t3 push   Apply repo T3 Code settings to the live app
   t3 diff   Show differences between live and tracked T3 settings
@@ -1109,8 +1191,8 @@ EOF
 }
 
 case "${1:-}" in
-  install) cmd_install ;;
-  doctor)  cmd_doctor ;;
+  install) shift; cmd_install "$@" ;;
+  doctor)  shift; cmd_doctor "$@" ;;
   t3)      shift; cmd_t3 "${1:-}" ;;
   upgrade) shift; cmd_upgrade "$@" ;;
   skills)  shift; cmd_skills "$@" ;;
