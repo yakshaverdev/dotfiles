@@ -171,11 +171,33 @@ case "${1:-}" in
     ;;
 esac
 
+# `npx @anthropic-ai/claude-code@X` puts its package bin dir first on PATH.
+# If that install is half-finished, npx falls through to this shim; fail
+# instead of silently running a different claude version.
+npx_bin="${PATH%%:*}"
+case "$npx_bin" in
+  */_npx/*/node_modules/.bin)
+    npx_dir="${npx_bin%/node_modules/.bin}"
+    if [ ! -x "$npx_bin/claude" ] && {
+         [ -d "$npx_dir/node_modules/@anthropic-ai/claude-code" ] ||
+         grep -q '"@anthropic-ai/claude-code"' "$npx_dir/package.json" 2>/dev/null; }; then
+      printf 'claude-ctx: npx did not install claude from @anthropic-ai/claude-code (broken cache).\n' >&2
+      printf 'claude-ctx: remove %s and run the command again.\n' "$npx_dir" >&2
+      exit 1
+    fi
+    ;;
+esac
+
+# A caller that points claude at its own endpoint or key manages auth itself
+# (decided before the context hook can add values).
+caller_auth=0
+[ -n "${ANTHROPIC_AUTH_TOKEN:-}${ANTHROPIC_BASE_URL:-}" ] && caller_auth=1
+
 # shellcheck source=/dev/null
 [[ -r "$HOME/.config/zsh/contexts.bash" ]] && source "$HOME/.config/zsh/contexts.bash"
 # Project API credentials are for project tools. Claude itself uses the
 # signed-in subscription, which ANTHROPIC_API_KEY would otherwise override.
-unset ANTHROPIC_API_KEY
+[ "$caller_auth" = 1 ] || unset ANTHROPIC_API_KEY
 
 # Read one raw KEY=value line from claude-tokens.env (written by dots secret sync).
 secret_from_file() { # NAME -> value on stdout
@@ -379,6 +401,12 @@ esac
 # Decide once whether the caller supplied a token. If so, never fail over.
 caller_token=0
 [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && caller_token=1
+# Never hand a subscription token (ours or one inherited from a parent
+# claude) to a session that talks to someone else's endpoint.
+if [ "$caller_auth" = 1 ]; then
+  unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_ACCOUNT
+  caller_token=1
+fi
 
 tok_team=$(read_token team)
 tok_ultra=$(read_token ultra)
@@ -398,7 +426,11 @@ fi
 [ "$wrap" = 1 ] && export CLAUDE_CTX_WRAPPER_PID=$$
 if [ "$caller_token" = 1 ]; then
   choose_account 1
-  log_line "pick=caller-token"
+  if [ "$caller_auth" = 1 ]; then
+    log_line "pick=caller-auth"
+  else
+    log_line "pick=caller-token"
+  fi
 else
   choose_account
 fi

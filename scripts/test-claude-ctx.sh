@@ -312,4 +312,39 @@ eq "relaunch drops prompt" "--model|opus|" "$(relaunch --model opus "fix it")"
 eq "relaunch drops resume" "--model=opus|" "$(relaunch --resume abc --model=opus hi)"
 eq "relaunch stops at --" "--verbose|" "$(relaunch --verbose -- "a prompt")"
 
+# 18. A caller with its own endpoint or key gets no subscription token,
+# not even one inherited from a parent claude, and keeps ANTHROPIC_API_KEY.
+reset
+write_secrets
+eq "caller auth: no token" "CLAUDE_ACCOUNT= TOKEN= LEAK=" \
+  "$(ANTHROPIC_AUTH_TOKEN=router CLAUDE_CODE_OAUTH_TOKEN=parent CLAUDE_ACCOUNT=team run_ctx)"
+grep -q 'pick=caller-auth' "$LOG" || fail "log has no caller-auth line"
+KEYBIN="$TMPROOT/keybin"
+mkdir -p "$KEYBIN"
+cat > "$KEYBIN/claude" <<'KEY'
+#!/usr/bin/env bash
+printf 'KEY=%s' "${ANTHROPIC_API_KEY:-}"
+KEY
+chmod +x "$KEYBIN/claude"
+eq "caller auth keeps api key" "KEY=k" \
+  "$(PATH="$KEYBIN:$PATH" ANTHROPIC_BASE_URL=https://router.example ANTHROPIC_API_KEY=k run_ctx)"
+eq "no caller auth drops api key" "KEY=" "$(PATH="$KEYBIN:$PATH" ANTHROPIC_API_KEY=k run_ctx)"
+
+# 19. A broken npx install of Claude Code fails loudly instead of running
+# another claude; other npx tools that call claude still work.
+reset
+write_secrets
+NPXA="$TMPROOT/npm/_npx/aaa"
+mkdir -p "$NPXA/node_modules/.bin" "$NPXA/node_modules/@anthropic-ai/claude-code"
+err=$(PATH="$NPXA/node_modules/.bin:$PATH" run_ctx --version 2>&1 >/dev/null)
+eq "broken npx status" "1" "$?"
+case "$err" in
+  *"remove $NPXA"*) ;;
+  *) fail "broken npx printed: $err" ;;
+esac
+NPXB="$TMPROOT/npm/_npx/bbb"
+mkdir -p "$NPXB/node_modules/.bin"
+eq "other npx tool runs claude" "CLAUDE_ACCOUNT=team TOKEN=tok-team LEAK=" \
+  "$(PATH="$NPXB/node_modules/.bin:$PATH" run_ctx)"
+
 printf 'ok: all claude-ctx tests passed\n'
