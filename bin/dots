@@ -748,7 +748,9 @@ cmd_doctor() {
       fi
       case "$p_agent" in
         codex)
-          if doctor_codex_plugin "$p_id"; then
+          if ! codex_bin >/dev/null 2>&1; then
+            note "codex not found — Codex plugin $p_id unchecked"
+          elif doctor_codex_plugin "$p_id"; then
             ok "codex: $p_id"
           else
             bad "codex: $p_id not installed (run: dots skills sync)"
