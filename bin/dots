@@ -759,13 +759,13 @@ cmd_doctor() {
             note "jq not found — OpenCode plugin $p_id unchecked"
           elif [[ ! -f "$oc_cfg" ]]; then
             note "$HOME/.config/opencode/opencode.json not found — OpenCode plugin $p_id unchecked"
-          # OpenCode documents .plugin; older writes used .plugins.
+          # OpenCode 2.x writes .plugins; older configs use .plugin. Check both.
           elif jq -e --arg s "$p_source" \
-              '((.plugin // .plugins // []) | index($s)) != null' \
+              '(((.plugin // []) + (.plugins // [])) | index($s)) != null' \
               "$oc_cfg" >/dev/null 2>&1; then
             ok "opencode: $p_id"
           else
-            bad "opencode: $p_id missing from $oc_cfg .plugin (run: dots skills sync)"
+            bad "opencode: $p_id missing from $oc_cfg (run: dots skills sync)"
           fi
           ;;
         *)
@@ -1239,7 +1239,10 @@ skills_sync() {
       for name in "${wanted[@]}"; do
         name="${name//[[:space:]]/}"
         [[ -n "$name" ]] || continue
-        [[ -d "$HOME/.agents/skills/$name" ]] || missing+=("$name")
+        # Claude reads only ~/.claude/skills, so a skill without that link
+        # is missing for Claude even when ~/.agents/skills has it.
+        [[ -d "$HOME/.agents/skills/$name" && -d "$HOME/.claude/skills/$name" ]] ||
+          missing+=("$name")
       done
       if ((${#missing[@]} == 0)); then
         info "  $source: up to date"
@@ -1252,10 +1255,11 @@ skills_sync() {
           -s "${missing[@]}" < /dev/null 2>&1 | sed 's/^/    /'; then
         wanted=()
         for name in "${missing[@]}"; do
-          [[ -d "$HOME/.agents/skills/$name" ]] || wanted+=("$name")
+          [[ -d "$HOME/.agents/skills/$name" && -d "$HOME/.claude/skills/$name" ]] ||
+            wanted+=("$name")
         done
         if ((${#wanted[@]})); then
-          warn "$source does not provide: ${wanted[*]}"
+          warn "$source did not install or link: ${wanted[*]}"
           fail "skills missing from $source: ${wanted[*]}"
         else
           info "  installed: ${missing[*]}"
