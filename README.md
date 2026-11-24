@@ -27,8 +27,11 @@ cp .env.example ~/.env && $EDITOR ~/.env   # fill in real values
 ```
 bin/dots                 # cross-platform CLI (install / doctor / t3 / secret)
 bin/dots-secret          # env var + API key manager (Infisical)
+bin/dots-agents          # MCP/skills translator for the agent CLIs
 bootstrap               # first-run entry point
 config/contexts         # client name → Infisical project + git remote patterns
+config/agents/          # global + client MCP servers for the agent CLIs
+lib/agents/*.jq         # MCP server translation filters
 config/hosts            # machine → ssh target for peer secret sync
 hooks/pre-commit        # gitleaks secret scan
 packages/Brewfile       # macOS packages
@@ -63,6 +66,7 @@ stow --no-folding -d "$DOTFILES/stow/<group>" -t "$HOME" <pkg>
 | `dots t3 push` | Apply `t3/` settings to the live T3 Code install |
 | `dots t3 diff` | Diff live vs tracked T3 settings |
 | `dots skills [sync\|upgrade] [--prune]` | Install missing global agent skills/plugins, or upgrade them; `--prune` drops skills no longer in the manifest |
+| `dots agents sync [--global-only\|--project-only]` | Translate `config/agents`, project `.mcp.json` and project skills into Claude Code, Codex and OpenCode config |
 | `dots secret <cmd>` | Env vars / API keys: `set`, `get`, `ls`, `rm`, `sync`, `import`, `ctx`, `run`, `reload`, `doctor` |
 | `dots secret --ctx NAME <cmd>` | Same commands against a client context project |
 
@@ -139,6 +143,19 @@ plugins stay in `stow/common/claude/.claude/settings.json`; the
 
 Project-specific skills belong in each project's own repo, not in this
 manifest.
+
+## Agent MCP servers
+
+`config/agents/mcp.json` holds global MCP servers. Each project can commit a
+`.mcp.json` next to its code, and `config/agents/<context>/mcp.json` holds
+servers for one client context. `dots agents sync` writes all three levels into
+Claude Code, Codex and OpenCode. Global and project `${VAR}` references stay
+references; client references are resolved at sync time and written to mode-600
+files. See `config/agents/README.md` for the levels and the Codex trust
+requirement.
+
+`dots install` runs the global level (`dots agents sync --global-only`). Run
+`dots agents sync` inside a repository for its project `.mcp.json` and skills.
 
 ## Supply-chain cooldown
 

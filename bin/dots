@@ -402,6 +402,10 @@ cmd_install() {
   info "→ Agent skills and plugins..."
   cmd_skills sync || fail "dots skills sync"
 
+  # 8b. Agent MCP servers (global; project sync runs inside a repo)
+  info "→ Agent MCP servers..."
+  "$DOTFILES/bin/dots-agents" sync --global-only || fail "dots agents sync"
+
   # 9. bat cache + git hooks
   if have bat; then
     info "→ bat cache --build"
@@ -1096,6 +1100,9 @@ Commands:
   skills [sync|upgrade] [--prune]
             Sync global agent skills and plugins (default sync) or upgrade
             them; --prune removes skills no longer in the manifest
+  agents sync [--global-only|--project-only]
+            Translate config/agents, project .mcp.json and project skills
+            into Claude Code, Codex and OpenCode config
   secret    Manage env vars / API keys (set, get, ls, rm, sync, import,
             reload, doctor)
 EOF
@@ -1107,6 +1114,7 @@ case "${1:-}" in
   t3)      shift; cmd_t3 "${1:-}" ;;
   upgrade) shift; cmd_upgrade "$@" ;;
   skills)  shift; cmd_skills "$@" ;;
+  agents)  shift; exec "$DOTFILES/bin/dots-agents" "$@" ;;
   secret)  shift; exec "$DOTFILES/bin/dots-secret" "$@" ;;
   -h|--help|help|"") usage ;;
   *) err "unknown command: $1"; usage; exit 1 ;;

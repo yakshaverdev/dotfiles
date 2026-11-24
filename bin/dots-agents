@@ -1,0 +1,982 @@
+#!/usr/bin/env bash
+# dots agents — translate one source format for MCP servers and project skills
+# into Claude Code, Codex and OpenCode config. See config/agents/README.md.
+set -euo pipefail
+
+# ── Resolve the repo from this script's real path ──────────────────────────
+resolve_realpath() {
+  local p="$1" d
+  while [[ -L "$p" ]]; do
+    d="$(cd -P "$(dirname "$p")" && pwd)"
+    p="$(readlink "$p")"
+    [[ "$p" != /* ]] && p="$d/$p"
+  done
+  printf '%s/%s\n' "$(cd -P "$(dirname "$p")" && pwd)" "$(basename "$p")"
+}
+
+if command -v readlink >/dev/null 2>&1 && readlink -f / >/dev/null 2>&1; then
+  SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+else
+  SELF="$(resolve_realpath "${BASH_SOURCE[0]}")"
+fi
+DOTFILES="$(cd "$(dirname "$SELF")/.." && pwd)"
+
+case "$(uname -s)" in
+  Darwin) OS=darwin ;;
+  Linux)  OS=linux ;;
+  *) echo "Unsupported OS: $(uname -s)" >&2; exit 1 ;;
+esac
+
+FAILURES=()
+
+info() { printf '%s\n' "$*"; }
+warn() { printf 'WARN: %s\n' "$*" >&2; }
+err()  { printf 'ERROR: %s\n' "$*" >&2; }
+fail() { FAILURES+=("$*"); }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# Codex's standalone installer links ~/.local/bin/codex, which non-login
+# shells may not have on PATH; the macOS app bundles its own copy.
+codex_bin() {
+  if have codex; then
+    command -v codex
+  elif [[ -x "$HOME/.local/bin/codex" ]]; then
+    printf '%s\n' "$HOME/.local/bin/codex"
+  elif [[ -x /Applications/Codex.app/Contents/Resources/codex ]]; then
+    printf '%s\n' /Applications/Codex.app/Contents/Resources/codex
+  else
+    return 1
+  fi
+}
+
+# ── agents ─────────────────────────────────────────────────────────────────
+# One source format for MCP servers and project skills, translated into the
+# native config of Claude Code, Codex and OpenCode. Levels:
+#   1. config/agents/mcp.json              global (user scope)
+#   2. <repo>/.mcp.json + skills-lock.json project, committed by its owner
+#   3. config/agents/<context>/mcp.json    client, secrets resolved at sync
+# See config/agents/README.md.
+
+AGENTS_TMP=""
+
+agents_cleanup() {
+  if [[ -n "$AGENTS_TMP" && -d "$AGENTS_TMP" ]]; then
+    rm -rf -- "$AGENTS_TMP"
+  fi
+  return 0
+}
+
+agents_config_dir() {
+  printf '%s\n' "${DOTS_AGENTS_CONFIG_DIR:-$DOTFILES/config/agents}"
+}
+
+agents_secret_runner() {
+  printf '%s\n' "${DOTS_SECRET_RUN:-$DOTFILES/bin/dots-secret}"
+}
+
+agents_state_file() {
+  printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/dots/agents-sync.json"
+}
+
+file_mode() {
+  if [[ "$OS" == darwin ]]; then
+    stat -f '%Lp' "$1" 2>/dev/null || true
+  else
+    stat -c '%a' "$1" 2>/dev/null || true
+  fi
+}
+
+agents_display_path() {
+  case "$1" in
+    "$HOME"/*) printf '~%s\n' "${1#"$HOME"}" ;;
+    *)         printf '%s\n' "$1" ;;
+  esac
+}
+
+# State keys contain repo paths; keep them usable as file-name parts.
+agents_safe_key() { printf '%s\n' "${1//[^A-Za-z0-9_.-]/_}"; }
+
+# One line, no secret values: jq's translated error, or "empty ${VAR}".
+agents_error_text() {
+  local line
+  line="$(head -n 1 "$1" 2>/dev/null || true)"
+  case "$line" in
+    *"empty:"*)
+      line="${line##*empty:}"
+      # shellcheck disable=SC2016 # literal ${...} in the message
+      printf 'empty ${%s}\n' "${line%%[!A-Za-z0-9_]*}"
+      ;;
+    *": "*) printf '%s\n' "${line##*: }" ;;
+    "")     printf 'translation failed\n' ;;
+    *)      printf '%s\n' "$line" ;;
+  esac
+}
+
+agents_names_json() {
+  jq -R -s -c 'split("\n") | map(select(length > 0)) | unique' "$1"
+}
+
+agents_count() {
+  jq -R -s 'split("\n") | map(select(length > 0)) | length' "$1"
+}
+
+# previous state array minus the desired names in a lines file
+agents_stale_json() {
+  jq -nc --argjson prev "$1" --argjson desired "$(agents_names_json "$2")" \
+    '$prev - $desired'
+}
+
+agents_state_get() {
+  local file
+  file="$(agents_state_file)"
+  if [[ ! -f "$file" ]]; then
+    printf '[]\n'
+    return 0
+  fi
+  jq -c --arg k "$1" '(.targets[$k] // [])' "$file" 2>/dev/null || printf '[]\n'
+}
+
+agents_state_put() { # key names-lines-file
+  local file key dir tmp
+  file="$(agents_state_file)"
+  key="$1"
+  dir="$(dirname "$file")"
+  mkdir -p "$dir"
+  if [[ ! -f "$file" ]]; then
+    printf '{"version":1,"targets":{}}\n' > "$file"
+  fi
+  tmp="$(mktemp "$dir/.agents-sync.XXXXXX")"
+  if ! jq --arg k "$key" --rawfile n "$2" '
+        .version = 1
+        | .targets = (.targets // {})
+        | .targets[$k] = ($n | split("\n") | map(select(length > 0)) | unique)
+      ' "$file" > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if cmp -s "$file" "$tmp"; then
+    rm -f "$tmp"
+  else
+    mv -f "$tmp" "$file"
+  fi
+  return 0
+}
+
+# Load a .mcp.json-shaped file into a compact object. Invalid files and
+# invalid server names are reported and dropped instead of breaking a sync.
+agents_load_map() { # source dest
+  local src="$1" dest="$2" bad
+  if [[ ! -f "$src" ]]; then
+    printf '{}\n' > "$dest"
+    return 0
+  fi
+  if ! jq -e '(.mcpServers // {}) | type == "object"' "$src" >/dev/null 2>&1; then
+    warn "$src is not a valid .mcp.json (expected an mcpServers object)"
+    printf '{}\n' > "$dest"
+    return 0
+  fi
+  bad="$(jq -r '.mcpServers // {} | keys[] | select(test("^[A-Za-z0-9_-]+$") | not)' "$src" 2>/dev/null || true)"
+  if [[ -n "$bad" ]]; then
+    while IFS= read -r name; do
+      [[ -n "$name" ]] || continue
+      fail "agents: invalid server name '$name' in $src (use [A-Za-z0-9_-])"
+    done <<< "$bad"
+  fi
+  jq -c '(.mcpServers // {}) | with_entries(select(.key | test("^[A-Za-z0-9_-]+$")))' \
+    "$src" > "$dest"
+}
+
+agents_target_tracked() { # repo rel
+  git -C "$1" ls-files --error-unmatch -- "$2" >/dev/null 2>&1
+}
+
+# Main worktree root for a linked worktree, else the same repository root.
+agents_main_root() { # repo
+  local repo="$1" common main
+  common="$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [[ -z "$common" ]]; then
+    common="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null || true)"
+    case "$common" in
+      ""|/*) ;;
+      *) common="$repo/$common" ;;
+    esac
+  fi
+  [[ -n "$common" ]] || return 1
+  main="$(dirname "$common")"
+  [[ "$main" != "/" ]] && main="${main%/}"
+  printf '%s\n' "$main"
+}
+
+# Paths whose trust entry lets an agent read this project. Claude and Codex
+# resolve a linked worktree through its main worktree; accepting ancestors also
+# covers a parent-level trust entry.
+agents_trust_paths() { # repo
+  local repo="$1" top main d
+  top="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null || printf '%s\n' "$repo")"
+  [[ -n "$top" ]] || top="$repo"
+  [[ "$top" != "/" ]] && top="${top%/}"
+  main="$(agents_main_root "$repo" 2>/dev/null || true)"
+  {
+    printf '%s\n' "$top"
+    if [[ -n "$main" && "$main" != "$top" ]]; then
+      printf '%s\n' "$main"
+    fi
+    d="$top"
+    while [[ "$d" != "/" ]]; do
+      d="$(dirname "$d")"
+      printf '%s\n' "$d"
+    done
+  } | awk '!seen[$0]++'
+}
+
+# Codex only reads <repo>/.codex/config.toml for a trusted project. Report the
+# requirement; never write the trust entry for the user.
+agents_codex_project_trusted() { # repo
+  local cfg="$HOME/.codex/config.toml" p
+  [[ -f "$cfg" ]] || return 1
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    if awk -v target="[projects.\"$p\"]" '
+      $0 ~ /^\[/ {
+        if (found) exit
+        if ($0 == target) { found = 1 }
+        next
+      }
+      found && /^[[:space:]]*trust_level[[:space:]]*=[[:space:]]*"trusted"/ { ok = 1; exit }
+      END { exit ok ? 0 : 1 }
+    ' "$cfg"; then
+      return 0
+    fi
+  done < <(agents_trust_paths "$1")
+  return 1
+}
+
+agents_claude_project_trusted() { # repo
+  local cfg="$HOME/.claude.json"
+  [[ -f "$cfg" ]] || return 1
+  jq -e --arg raw "$(agents_trust_paths "$1")" '
+    ($raw | split("\n") | map(select(length > 0))) as $paths
+    | (.projects // {}) as $projects
+    | any($paths[]; ($projects[.] // {}).hasTrustDialogAccepted == true)
+  ' "$cfg" >/dev/null 2>&1
+}
+
+# Add a pattern to the repository exclude file once, idempotently.
+add_exclude() { # repo pattern
+  local repo="$1" pat="$2" file
+  file="$(git -C "$repo" rev-parse --git-path info/exclude 2>/dev/null || true)"
+  [[ -n "$file" ]] || return 0
+  case "$file" in
+    /*) ;;
+    *) file="$repo/$file" ;;
+  esac
+  mkdir -p "$(dirname "$file")"
+  [[ -f "$file" ]] || : > "$file"
+  if grep -qxF -- "$pat" "$file"; then
+    return 0
+  fi
+  if [[ -s "$file" ]] && [[ "$(tail -c 1 "$file")" != "" ]]; then
+    printf '\n' >> "$file"
+  fi
+  printf '%s\n' "$pat" >> "$file"
+}
+
+# Merge a compact object into .mcp of a JSON file with jq, preserving every
+# other key and every unmanaged server. Writes only when the content changes.
+agents_merge_jq_file() { # file path desired-object-file stale-json literal
+  local file="$1" path="$2" desired="$3" stale="$4" literal="$5"
+  local dir tmp
+  dir="$(dirname "$file")"
+  mkdir -p "$dir"
+  if [[ -f "$file" ]] && ! jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
+    warn "$file is not a JSON object — skipping"
+    return 1
+  fi
+  [[ -f "$file" ]] || printf '{}\n' > "$file"
+  tmp="$(mktemp "$dir/.$(basename "$file").XXXXXX")"
+  if ! jq --arg path "$path" --slurpfile d "$desired" --argjson stale "$stale" '
+        ($d[0] // {}) as $desired
+        | (if (.[$path] | type) == "object" then .[$path] else {} end) as $current
+        | .[$path] = (($current + $desired)
+            | with_entries(.key as $k | select(($stale | index($k)) == null)))
+      ' "$file" > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if [[ "$literal" == 1 ]]; then
+    chmod 600 "$tmp"
+  elif [[ -f "$file" ]]; then
+    chmod "$(file_mode "$file")" "$tmp" 2>/dev/null || true
+  fi
+  if cmp -s "$file" "$tmp"; then
+    rm -f "$tmp"
+  else
+    mv -f "$tmp" "$file"
+  fi
+  if [[ "$literal" == 1 ]]; then
+    chmod 600 "$file" 2>/dev/null || true
+  fi
+  return 0
+}
+
+agents_claude_remove() { # dir scope name
+  if [[ -n "$1" ]]; then
+    ( cd "$1" && claude mcp remove -s "$2" "$3" >/dev/null 2>&1 ) || true
+  else
+    claude mcp remove -s "$2" "$3" >/dev/null 2>&1 || true
+  fi
+}
+
+agents_claude_add() { # dir scope name json-file
+  if [[ -n "$1" ]]; then
+    ( cd "$1" && claude mcp add-json -s "$2" "$3" "$(cat "$4")" ) >/dev/null 2>&1
+  else
+    claude mcp add-json -s "$2" "$3" "$(cat "$4")" >/dev/null 2>&1
+  fi
+}
+
+agents_apply_claude_scope() { # state-key scope cwd map-file
+  local key="$1" scope="$2" dir="$3" map="$4"
+  local tag="claude ($scope)" skey
+  skey="$(agents_safe_key "$key")"
+  local desired="$AGENTS_TMP/$skey.names" ok="$AGENTS_TMP/$skey.ok"
+  local err="$AGENTS_TMP/$skey.err"
+  local n name sfile out prev stale
+  : > "$desired"
+  : > "$ok"
+  while IFS= read -r n; do
+    name="$(jq -r '.key' <<<"$n")"
+    sfile="$AGENTS_TMP/$skey.$name.server"
+    printf '%s\n' "$(jq -c '.value' <<<"$n")" > "$sfile"
+    if out="$(jq -c -f "$DOTFILES/lib/agents/mcp-claude.jq" --arg name "$name" \
+          "$sfile" 2>"$err")"; then
+      printf '%s\n' "$name" >> "$desired"
+      printf '%s\n' "$out" > "$AGENTS_TMP/$skey.$name.json"
+    else
+      fail "agents: $tag $name: $(agents_error_text "$err")"
+    fi
+    rm -f "$sfile"
+  done < <(jq -c 'to_entries[]' "$map")
+
+  prev="$(agents_state_get "$key")"
+  stale="$(agents_stale_json "$prev" "$desired")"
+
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    agents_claude_remove "$dir" "$scope" "$name"
+  done < <(jq -r '.[]' <<<"$stale")
+
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    agents_claude_remove "$dir" "$scope" "$name"
+    if agents_claude_add "$dir" "$scope" "$name" "$AGENTS_TMP/$skey.$name.json"; then
+      printf '%s\n' "$name" >> "$ok"
+    else
+      fail "agents: $tag $name: add-json failed"
+    fi
+  done < <(sort -u "$desired")
+
+  if ! agents_state_put "$key" "$ok"; then
+    fail "agents: could not write $(agents_display_path "$(agents_state_file)")"
+  fi
+  # Local scope holds resolved client values in Claude's private config file.
+  if [[ "$scope" == local ]]; then
+    chmod 600 "$HOME/.claude.json" 2>/dev/null || true
+  fi
+  info "  $tag: $(agents_count "$ok") server(s)"
+  return 0
+}
+
+agents_merge_settings_local() { # file desired-lines stale-json
+  local file="$1" desired="$2" stale="$3" dir tmp
+  dir="$(dirname "$file")"
+  mkdir -p "$dir"
+  [[ -f "$file" ]] || printf '{}\n' > "$file"
+  if ! jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
+    warn "$file is not a JSON object — skipping"
+    return 1
+  fi
+  tmp="$(mktemp "$dir/.settings.local.XXXXXX")"
+  if ! jq --rawfile d "$desired" --argjson stale "$stale" '
+        ($d | split("\n") | map(select(length > 0)) | unique) as $desired
+        | ((.enabledMcpjsonServers // []) + $desired | unique) as $all
+        | .enabledMcpjsonServers =
+            ($all | map(select(. as $n | ($stale | index($n)) == null)))
+        | if ((.disabledMcpjsonServers // []) | length) == 0
+          then del(.disabledMcpjsonServers)
+          else .disabledMcpjsonServers =
+            ((.disabledMcpjsonServers // []) - $desired)
+          end
+      ' "$file" > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if cmp -s "$file" "$tmp"; then
+    rm -f "$tmp"
+  else
+    mv -f "$tmp" "$file"
+  fi
+  return 0
+}
+
+agents_apply_claude_approval() { # repo project-map
+  local repo="$1" map="$2" rel=".claude/settings.local.json"
+  local file="$repo/$rel" key="claude-approval:$repo"
+  local desired="$AGENTS_TMP/claude-approval.names" prev stale
+  if agents_target_tracked "$repo" "$rel"; then
+    warn "agents: $rel is tracked by git — skipping Claude project approval"
+    return 0
+  fi
+  jq -r 'keys[]' "$map" > "$desired"
+  prev="$(agents_state_get "$key")"
+  stale="$(agents_stale_json "$prev" "$desired")"
+  if [[ ! -f "$file" && ! -s "$desired" ]]; then
+    if ! agents_state_put "$key" "$desired"; then
+      fail "agents: could not write $(agents_display_path "$(agents_state_file)")"
+    fi
+    info "  claude ($rel): 0 approved"
+    return 0
+  fi
+  if ! agents_merge_settings_local "$file" "$desired" "$stale"; then
+    fail "agents: could not update $rel"
+    return 0
+  fi
+  add_exclude "$repo" "$rel"
+  if ! agents_state_put "$key" "$desired"; then
+    fail "agents: could not write $(agents_display_path "$(agents_state_file)")"
+  fi
+  info "  claude ($rel): $(agents_count "$desired") approved"
+  return 0
+}
+
+agents_apply_opencode() { # state-key file map literal
+  local key="$1" file="$2" map="$3" literal="$4" skey
+  skey="$(agents_safe_key "$key")"
+  local err="$AGENTS_TMP/$skey.err" names="$AGENTS_TMP/$skey.names"
+  local entries="$AGENTS_TMP/$skey.entries" desired="$AGENTS_TMP/$skey.desired"
+  local n name sfile out prev stale
+  : > "$names"
+  : > "$entries"
+  while IFS= read -r n; do
+    name="$(jq -r '.key' <<<"$n")"
+    sfile="$AGENTS_TMP/$skey.$name.server"
+    printf '%s\n' "$(jq -c '.value' <<<"$n")" > "$sfile"
+    if out="$(jq -c -f "$DOTFILES/lib/agents/mcp-opencode.jq" --arg name "$name" \
+          "$sfile" 2>"$err")"; then
+      printf '%s\n' "$out" > "$AGENTS_TMP/$skey.$name.json"
+      jq -nc --arg n "$name" --slurpfile v "$AGENTS_TMP/$skey.$name.json" \
+        '{key:$n,value:$v[0]}' >> "$entries"
+      printf '%s\n' "$name" >> "$names"
+    else
+      fail "agents: opencode $name: $(agents_error_text "$err")"
+    fi
+    rm -f "$sfile"
+  done < <(jq -c 'to_entries[]' "$map")
+
+  jq -s 'from_entries' "$entries" > "$desired"
+  prev="$(agents_state_get "$key")"
+  stale="$(agents_stale_json "$prev" "$names")"
+  if [[ ! -f "$file" && "$(jq 'length' "$desired")" == "0" ]]; then
+    if ! agents_state_put "$key" "$names"; then
+      fail "agents: could not write $(agents_display_path "$(agents_state_file)")"
+    fi
+    info "  opencode ($(agents_display_path "$file")): 0 server(s)"
+    return 0
+  fi
+  if ! agents_merge_jq_file "$file" "mcp" "$desired" "$stale" "$literal"; then
+    fail "agents: could not update $(agents_display_path "$file")"
+    return 0
+  fi
+  if ! agents_state_put "$key" "$names"; then
+    fail "agents: could not write $(agents_display_path "$(agents_state_file)")"
+  fi
+  info "  opencode ($(agents_display_path "$file")): $(agents_count "$names") server(s)"
+  return 0
+}
+
+# Strip whole [mcp_servers.<name>] tables (and their subtables) for names in a
+# JSON array. Blank lines directly before a removed table go with it, which
+# keeps a strip/append cycle byte-identical on the next run.
+agents_toml_strip() { # src dest names-json
+  local src="$1" dest="$2" names="$3" list
+  if [[ ! -f "$src" ]]; then
+    : > "$dest"
+    return 0
+  fi
+  list="$(jq -r '.[]' <<<"$names" | tr '\n' ' ')"
+  awk -v names="$list" '
+    BEGIN {
+      n = split(names, a, " ")
+      for (i = 1; i <= n; i++) if (a[i] != "") managed[a[i]] = 1
+      skipping = 0
+      blanks = 0
+    }
+    function flush(   i) {
+      for (i = 0; i < blanks; i++) print ""
+      blanks = 0
+    }
+    {
+      line = $0
+      if (line ~ /^[[:space:]]*\[/) {
+        tbl = line
+        sub(/^[[:space:]]*\[+/, "", tbl)
+        sub(/\]+.*$/, "", tbl)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", tbl)
+        if (tbl ~ /^mcp_servers\./) {
+          nm = tbl
+          sub(/^mcp_servers\./, "", nm)
+          sub(/\..*$/, "", nm)
+          gsub(/^"|"$/, "", nm)
+          if (nm in managed) {
+            skipping = 1
+            blanks = 0
+            next
+          }
+        }
+        skipping = 0
+      }
+      if (skipping) next
+      if (line ~ /^[[:space:]]*$/) {
+        blanks++
+        next
+      }
+      flush()
+      print line
+    }
+    END { flush() }
+  ' "$src" | awk '
+    { if ($0 ~ /^[[:space:]]*$/) { b++ } else { while (b > 0) { print ""; b-- } print } }
+  ' > "$dest"
+  return 0
+}
+
+agents_toml_apply() { # file strip-names-json rendered-file literal
+  local file="$1" strip_names="$2" rendered="$3" literal="$4"
+  local dir base cand mode
+  dir="$(dirname "$file")"
+  mkdir -p "$dir"
+  base="$AGENTS_TMP/toml.base"
+  cand="$AGENTS_TMP/toml.candidate"
+  agents_toml_strip "$file" "$base" "$strip_names"
+  : > "$cand"
+  if [[ -s "$base" ]]; then
+    cat "$base" >> "$cand"
+    if [[ -s "$rendered" ]]; then
+      printf '\n' >> "$cand"
+      cat "$rendered" >> "$cand"
+    fi
+  else
+    cat "$rendered" >> "$cand"
+  fi
+  if [[ "$literal" == 1 ]]; then
+    chmod 600 "$cand"
+  elif [[ -f "$file" ]]; then
+    mode="$(file_mode "$file")"
+    if [[ -n "$mode" ]]; then
+      chmod "$mode" "$cand" 2>/dev/null || true
+    fi
+  else
+    chmod 644 "$cand"
+  fi
+  if [[ -f "$file" ]] && cmp -s "$file" "$cand"; then
+    rm -f "$cand"
+  else
+    mv -f "$cand" "$file"
+  fi
+  if [[ "$literal" == 1 && -f "$file" ]]; then
+    chmod 600 "$file" 2>/dev/null || true
+  fi
+  return 0
+}
+
+agents_codex_cli_can() { # normalized-json-file
+  jq -e '
+    if .kind == "http" then
+      (((.http_headers // {}) | length) == 0)
+      and (((.env_http_headers // {}) | length) == 0)
+      and ((.url | test("\n")) | not)
+    elif .kind == "stdio" then
+      (((.env_vars // []) | length) == 0)
+      and ([((.env // {}) | to_entries[] | .value | test("\n"))] | any | not)
+    else
+      false
+    end
+  ' "$1" >/dev/null 2>&1
+}
+
+agents_codex_cli_add() { # codex-bin name normalized-json-file
+  local codex="$1" name="$2" norm="$3" kind url bearer entry
+  local -a args=() envs=() cmd=()
+  kind="$(jq -r '.kind' "$norm")"
+  args=(mcp add "$name")
+  if [[ "$kind" == "http" ]]; then
+    url="$(jq -r '.url' "$norm")"
+    args+=(--url "$url")
+    bearer="$(jq -r '.bearer_token_env_var // empty' "$norm")"
+    if [[ -n "$bearer" ]]; then
+      args+=(--bearer-token-env-var "$bearer")
+    fi
+  else
+    while IFS= read -r entry; do
+      [[ -n "$entry" ]] && envs+=("$entry")
+    done < <(jq -r '(.env // {}) | to_entries[] | "\(.key)=\(.value)"' "$norm")
+    if (( ${#envs[@]} )); then
+      for entry in "${envs[@]}"; do
+        args+=(--env "$entry")
+      done
+    fi
+    while IFS= read -r entry; do
+      [[ -n "$entry" ]] && cmd+=("$entry")
+    done < <(jq -r '.command, (.args // [])[]' "$norm")
+    args+=(-- "${cmd[@]}")
+  fi
+  "$codex" "${args[@]}" >/dev/null 2>&1
+}
+
+agents_apply_codex() { # state-key file map use-cli literal
+  local key="$1" file="$2" map="$3" use_cli="$4" literal="$5" skey
+  skey="$(agents_safe_key "$key")"
+  local codex="" err="$AGENTS_TMP/$skey.err"
+  local names="$AGENTS_TMP/$skey.names" toml_names="$AGENTS_TMP/$skey.toml_names"
+  local cli_names="$AGENTS_TMP/$skey.cli_names" rendered="$AGENTS_TMP/$skey.toml"
+  local ok="$AGENTS_TMP/$skey.ok"
+  local n name sfile norm prev stale strip
+  : > "$names"
+  : > "$toml_names"
+  : > "$cli_names"
+  : > "$rendered"
+  : > "$ok"
+
+  if [[ "$use_cli" == 1 ]]; then
+    codex="$(codex_bin || true)"
+    if [[ -z "$codex" ]]; then
+      use_cli=0
+      warn "codex not found — writing TOML only for $key"
+    fi
+  fi
+
+  while IFS= read -r n; do
+    name="$(jq -r '.key' <<<"$n")"
+    sfile="$AGENTS_TMP/$skey.$name.server"
+    printf '%s\n' "$(jq -c '.value' <<<"$n")" > "$sfile"
+    if norm="$(jq -c -f "$DOTFILES/lib/agents/mcp-codex.jq" --arg name "$name" \
+          --arg format json "$sfile" 2>"$err")"; then
+      printf '%s\n' "$norm" > "$AGENTS_TMP/$skey.$name.codex.json"
+      printf '%s\n' "$name" >> "$names"
+      if [[ "$use_cli" == 1 ]] && agents_codex_cli_can "$AGENTS_TMP/$skey.$name.codex.json"; then
+        printf '%s\n' "$name" >> "$cli_names"
+      else
+        printf '%s\n' "$name" >> "$toml_names"
+        if [[ -s "$rendered" ]]; then
+          printf '\n' >> "$rendered"
+        fi
+        jq -j -f "$DOTFILES/lib/agents/mcp-codex.jq" --arg name "$name" \
+          --arg format toml "$sfile" >> "$rendered"
+      fi
+    else
+      fail "agents: codex $name: $(agents_error_text "$err")"
+    fi
+    rm -f "$sfile"
+  done < <(jq -c 'to_entries[]' "$map")
+
+  prev="$(agents_state_get "$key")"
+  stale="$(agents_stale_json "$prev" "$names")"
+  strip="$(jq -nc --argjson a "$stale" \
+    --argjson b "$(agents_names_json "$toml_names")" '$a + $b | unique')"
+
+  if [[ ! -f "$file" && ! -s "$names" ]]; then
+    if ! agents_state_put "$key" "$ok"; then
+      fail "agents: could not write $(agents_display_path "$(agents_state_file)")"
+    fi
+    info "  codex ($(agents_display_path "$file")): 0 server(s)"
+    return 0
+  fi
+
+  # Codex appends CLI tables at the end of the file, so write them before the
+  # TOML append. This keeps the table order stable from run to run.
+  if [[ "$use_cli" == 1 ]]; then
+    while IFS= read -r name; do
+      [[ -n "$name" ]] || continue
+      "$codex" mcp remove "$name" >/dev/null 2>&1 || true
+      if agents_codex_cli_add "$codex" "$name" "$AGENTS_TMP/$skey.$name.codex.json"; then
+        printf '%s\n' "$name" >> "$ok"
+      else
+        fail "agents: codex $name: mcp add failed"
+      fi
+    done < <(sort -u "$cli_names")
+  fi
+
+  if ! agents_toml_apply "$file" "$strip" "$rendered" "$literal"; then
+    fail "agents: could not update $(agents_display_path "$file")"
+    return 0
+  fi
+
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    printf '%s\n' "$name" >> "$ok"
+  done < <(sort -u "$toml_names")
+
+  if ! agents_state_put "$key" "$ok"; then
+    fail "agents: could not write $(agents_display_path "$(agents_state_file)")"
+  fi
+  info "  codex ($(agents_display_path "$file")): $(agents_count "$ok") server(s)"
+  return 0
+}
+
+# Resolve every ${VAR} in a client map with the context environment. Values
+# are never put in argv or printed; the temp directory is mode 700.
+agents_resolve_client_map() { # context map-file dest
+  local context="$1" map="$2" dest="$3"
+  local runner values err n name sfile out entries
+  runner="$(agents_secret_runner)"
+  values="$AGENTS_TMP/context-$context.env.json"
+  err="$AGENTS_TMP/context-$context.err"
+  entries="$AGENTS_TMP/client.entries"
+  : > "$entries"
+  if ! ( umask 077; "$runner" --ctx "$context" -- jq -nc 'env' > "$values" 2>"$err" ); then
+    fail "agents: context $context: could not load secrets ($(agents_error_text "$err"))"
+    printf '{}\n' > "$dest"
+    return 0
+  fi
+  chmod 600 "$values" 2>/dev/null || true
+  while IFS= read -r n; do
+    name="$(jq -r '.key' <<<"$n")"
+    sfile="$AGENTS_TMP/client.$name.server"
+    printf '%s\n' "$(jq -c '.value' <<<"$n")" > "$sfile"
+    if out="$(jq -c -f "$DOTFILES/lib/agents/resolve-refs.jq" \
+          --slurpfile vals "$values" "$sfile" 2>"$err")"; then
+      printf '%s\n' "$out" > "$AGENTS_TMP/client.$name.json"
+      jq -nc --arg n "$name" --slurpfile v "$AGENTS_TMP/client.$name.json" \
+        '{key:$n,value:$v[0]}' >> "$entries"
+    else
+      fail "agents: context $context $name: $(agents_error_text "$err")"
+    fi
+    rm -f "$sfile"
+  done < <(jq -c 'to_entries[]' "$map")
+  jq -s 'from_entries' "$entries" > "$dest"
+  return 0
+}
+
+agents_sync_global() {
+  local src map
+  src="$(agents_config_dir)/mcp.json"
+  map="$AGENTS_TMP/global.json"
+  info "→ Global ($(agents_display_path "$src"))"
+  agents_load_map "$src" "$map"
+
+  if have claude; then
+    agents_apply_claude_scope "claude-user" user "" "$map"
+  else
+    warn "claude not found — skipping global Claude MCP"
+  fi
+
+  if codex_bin >/dev/null; then
+    agents_apply_codex "codex-global" "$HOME/.codex/config.toml" "$map" 1 0
+  else
+    warn "codex not found — skipping global Codex MCP"
+  fi
+
+  if have opencode; then
+    agents_apply_opencode "opencode-global" \
+      "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json" "$map" 0
+  else
+    warn "opencode not found — skipping global OpenCode MCP"
+  fi
+}
+
+agents_exclude_installed_skills() { # repo
+  local repo="$1" base child rel
+  for base in .claude/skills .agents/skills .codex/skills .opencode/skills; do
+    [[ -d "$repo/$base" ]] || continue
+    for child in "$repo/$base"/*; do
+      [[ -e "$child" || -L "$child" ]] || continue
+      rel="$base/$(basename "$child")"
+      agents_target_tracked "$repo" "$rel" && continue
+      add_exclude "$repo" "$rel"
+    done
+  done
+}
+
+agents_sync_project_skills() { # repo
+  local repo="$1" a c
+  a="$repo/.agents/skills"
+  c="$repo/.claude/skills"
+  info "→ Project skills"
+  if { [[ -e "$a" || -L "$a" ]] && [[ ! -e "$c" && ! -L "$c" ]]; }; then
+    mkdir -p "$repo/.claude"
+    ln -s ../.agents/skills "$c"
+    add_exclude "$repo" ".claude/skills"
+    info "  linked .claude/skills -> ../.agents/skills"
+  elif { [[ -e "$c" || -L "$c" ]] && [[ ! -e "$a" && ! -L "$a" ]]; }; then
+    mkdir -p "$repo/.agents"
+    ln -s ../.claude/skills "$a"
+    add_exclude "$repo" ".agents/skills"
+    info "  linked .agents/skills -> ../.claude/skills"
+  elif [[ -e "$a" || -L "$a" ]] && [[ -e "$c" || -L "$c" ]]; then
+    info "  .agents/skills and .claude/skills both exist — leaving them alone"
+  else
+    info "  no .agents/skills or .claude/skills"
+  fi
+
+  if [[ ! -f "$repo/skills-lock.json" ]]; then
+    return 0
+  fi
+  if ! have npx; then
+    warn "npx not found — skipping skills restore"
+    return 0
+  fi
+  info "  restoring skills from skills-lock.json"
+  if ! ( cd "$repo" && npx -y skills@latest experimental_install \
+          -a claude-code codex opencode < /dev/null ) 2>&1 | sed 's/^/    /'; then
+    fail "agents: skills restore"
+  fi
+  agents_exclude_installed_skills "$repo"
+  return 0
+}
+
+agents_sync_project() {
+  local repo context cfg proj client client_resolved merged literal
+  local trust_hint main_root
+  repo="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -z "$repo" ]]; then
+    info "  not a git repository — skipping project level"
+    return 0
+  fi
+  info "→ Project ($repo)"
+
+  proj="$AGENTS_TMP/project.json"
+  client="$AGENTS_TMP/client.json"
+  client_resolved="$AGENTS_TMP/client-resolved.json"
+  agents_load_map "$repo/.mcp.json" "$proj"
+
+  context="$("$DOTFILES/bin/dots-secret" ctx "$repo" 2>/dev/null || true)"
+  [[ -n "$context" ]] || context=personal
+  cfg="$(agents_config_dir)/$context/mcp.json"
+  if [[ "$context" != personal && -f "$cfg" ]]; then
+    info "  context: $context"
+    agents_load_map "$cfg" "$client"
+    agents_resolve_client_map "$context" "$client" "$client_resolved"
+  else
+    printf '{}\n' > "$client"
+    printf '{}\n' > "$client_resolved"
+  fi
+
+  literal=0
+  if [[ "$(jq 'length' "$client_resolved")" != "0" ]]; then
+    literal=1
+  fi
+  merged="$AGENTS_TMP/merged.json"
+  jq -c -s '.[0] * .[1]' "$proj" "$client_resolved" > "$merged"
+
+  if have claude; then
+    if [[ -f "$repo/.claude/settings.local.json" \
+          || "$(jq 'length' "$proj")" != "0" ]]; then
+      agents_apply_claude_approval "$repo" "$proj"
+      if ! agents_claude_project_trusted "$repo"; then
+        warn "agents: Claude shows .mcp.json servers as pending until this project (or its main worktree) is trusted in ~/.claude.json (dots does not do this for you)"
+      fi
+    fi
+    if [[ "$(jq 'length' "$client_resolved")" != "0" \
+          || "$(agents_state_get "claude-local:$repo")" != "[]" ]]; then
+      agents_apply_claude_scope "claude-local:$repo" local "$repo" "$client_resolved"
+    fi
+  else
+    warn "claude not found — skipping project Claude MCP"
+  fi
+
+  if codex_bin >/dev/null; then
+    if [[ -f "$repo/.codex/config.toml" || "$(jq 'length' "$merged")" != "0" ]]; then
+      if agents_target_tracked "$repo" ".codex/config.toml"; then
+        warn "agents: .codex/config.toml is tracked by git — skipping Codex project MCP"
+      else
+        add_exclude "$repo" ".codex/config.toml"
+        agents_apply_codex "codex-project:$repo" "$repo/.codex/config.toml" \
+          "$merged" 0 "$literal"
+        if ! agents_codex_project_trusted "$repo"; then
+          trust_hint="$repo"
+          main_root="$(agents_main_root "$repo" 2>/dev/null || true)"
+          if [[ -n "$main_root" && "$main_root" != "$repo" ]]; then
+            trust_hint="$main_root"
+          fi
+          warn "agents: Codex ignores .codex/config.toml until this project is trusted: add [projects.\"$trust_hint\"] trust_level = \"trusted\" to ~/.codex/config.toml (dots does not do this for you)"
+        fi
+      fi
+    fi
+  else
+    warn "codex not found — skipping project Codex MCP"
+  fi
+
+  if have opencode; then
+    if [[ -f "$repo/opencode.json" || "$(jq 'length' "$merged")" != "0" ]]; then
+      if agents_target_tracked "$repo" "opencode.json"; then
+        warn "agents: opencode.json is tracked by git — skipping OpenCode project MCP"
+      else
+        add_exclude "$repo" "opencode.json"
+        agents_apply_opencode "opencode-project:$repo" "$repo/opencode.json" \
+          "$merged" "$literal"
+      fi
+    fi
+  else
+    warn "opencode not found — skipping project OpenCode MCP"
+  fi
+
+  agents_sync_project_skills "$repo"
+  return 0
+}
+
+cmd_agents() {
+  local action="" global_only=0 project_only=0 failures_before i
+  while (($#)); do
+    case "$1" in
+      sync) action=sync ;;
+      --global-only) global_only=1 ;;
+      --project-only) project_only=1 ;;
+      -h|--help)
+        info "usage: dots agents sync [--global-only|--project-only]"
+        return 0 ;;
+      *) err "usage: dots agents sync [--global-only|--project-only]"; return 1 ;;
+    esac
+    shift
+  done
+  if [[ -z "$action" ]]; then
+    err "usage: dots agents sync [--global-only|--project-only]"
+    return 1
+  fi
+  if (( global_only && project_only )); then
+    err "choose only one of --global-only and --project-only"
+    return 1
+  fi
+  if ! have jq; then
+    err "jq is required for dots agents"
+    return 1
+  fi
+
+  failures_before=${#FAILURES[@]}
+  AGENTS_TMP="$(mktemp -d "${TMPDIR:-/tmp}/dots-agents.XXXXXX")"
+  chmod 700 "$AGENTS_TMP"
+  trap agents_cleanup EXIT
+
+  info "=== dots agents (sync) ==="
+  if (( ! project_only )); then
+    agents_sync_global
+  fi
+  if (( ! global_only )); then
+    agents_sync_project
+  fi
+
+  if ((${#FAILURES[@]} > failures_before)); then
+    warn "agents sync had ${#FAILURES[@]} failure(s):"
+    for ((i = failures_before; i < ${#FAILURES[@]}; i++)); do
+      info "  - ${FAILURES[i]}"
+    done
+    agents_cleanup
+    AGENTS_TMP=""
+    return 1
+  fi
+  agents_cleanup
+  AGENTS_TMP=""
+  return 0
+}
+
+cmd_agents "$@"

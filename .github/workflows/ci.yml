@@ -19,7 +19,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y zsh shellcheck
       - name: ShellCheck
         run: >-
-          shellcheck -x bin/dots bin/dots-secret bin/claude-ctx bin/shims/claude bootstrap hooks/pre-commit scripts/*.sh
+          shellcheck -x bin/dots bin/dots-secret bin/dots-agents bin/claude-ctx bin/shims/claude bootstrap hooks/pre-commit scripts/*.sh
           stow/common/tmux/.config/tmux/*.sh
       - name: zsh syntax
         run: |
@@ -36,8 +36,12 @@ jobs:
         run: |
           jq empty t3/*.json
           jq empty stow/common/claude/.claude/settings.json
+          jq empty config/agents/mcp.json
+          jq empty .mcp.json
       - name: claude-ctx tests
         run: bash scripts/test-claude-ctx.sh
+      - name: agents sync tests
+        run: bash scripts/test-dots-agents.sh
       - name: git config parses
         run: git config --file stow/common/git/.config/git/config --list >/dev/null
 
@@ -102,4 +106,4 @@ jobs:
             done
           done
       - name: bash syntax
-        run: bash -n bin/dots bin/dots-secret bin/claude-ctx bootstrap
+        run: bash -n bin/dots bin/dots-secret bin/dots-agents bin/claude-ctx bootstrap
