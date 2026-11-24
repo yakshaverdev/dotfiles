@@ -17,4 +17,5 @@ When interacting with Cloudflare, use the cf CLI unless the project has a Wrangl
 - Give each new task its own session ID, starting with `ses_` (e.g. `ses_mealwiden_20261110T0712`), and pass it to `oc-worker`.
 - After each run, review the diff against what we agreed and run the project's checks (type check, tests). Then either tell me it's done, or send a fix-up brief **with the same session ID** so OpenCode keeps what it already read and decided. A fix-up brief can then just describe what's wrong and what to change.
 - If I name another `opencode-go/...` model, use it for that task.
+- pstack skills are the exception: they pick their own models from `pstack-models.md`, so do not route their work through `oc-worker`.
 - When the machine runs T3 Code and the work belongs on another linked machine, T3's `delegate_task` with provider `opencode` and model `opencode-go/deepseek-v4.1-flash` is the equivalent.

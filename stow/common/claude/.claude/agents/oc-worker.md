@@ -12,9 +12,9 @@ The caller gives you a session ID that starts with `ses_`. Pass it with `-s`: a 
 
 Always run OpenCode in the background. OpenCode runs often take longer than the 10-minute limit of a foreground command.
 
-1. Write the full task, verbatim, to a file (for example `/tmp/<session-id>.task.md`). Then start this command with the Bash tool and `run_in_background: true`, and a `timeout` of 7200000:
+1. Write the full task, verbatim, to a file (for example `/tmp/<session-id>.task.md`). Then start this command with the Bash tool and `run_in_background: true`, and a `timeout` of 7200000. Replace `<model>` with the model chosen above:
 
-   opencode run -m opencode-go/deepseek-v4.1-flash -s <session-id> --archived "$(cat /tmp/<session-id>.task.md)" > /tmp/<session-id>.log 2>&1; echo "exit=$?" >> /tmp/<session-id>.log
+   opencode run -m <model> -s <session-id> --archived "$(cat /tmp/<session-id>.task.md)" > /tmp/<session-id>.log 2>&1; echo "exit=$?" >> /tmp/<session-id>.log
 
 2. Do not poll, sleep or start a second run. Wait for the completion notification of that background command.
 3. When it completes, read the end of `/tmp/<session-id>.log` (OpenCode's final answer is at the end) and run `git diff --stat`.
