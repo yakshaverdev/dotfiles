@@ -1,0 +1,1199 @@
+#!/usr/bin/env bash
+# dots draft — spec-first changes: a private ledger, Codex review rounds and
+# the first-review measure. See docs/first-draft.md.
+#
+# Every event is one JSON row appended to $STATE/ledger.jsonl. Change folders
+# live under $STATE/changes/<id>/ and are private: umask 077, so folders are
+# 700 and files 600. All heavy logic is jq; this script only orchestrates.
+set -euo pipefail
+umask 077
+
+# ── Resolve the repo from this script's real path ──────────────────────────
+resolve_realpath() {
+  local p="$1" d
+  while [[ -L "$p" ]]; do
+    d="$(cd -P "$(dirname "$p")" && pwd)"
+    p="$(readlink "$p")"
+    [[ "$p" != /* ]] && p="$d/$p"
+  done
+  printf '%s/%s\n' "$(cd -P "$(dirname "$p")" && pwd)" "$(basename "$p")"
+}
+
+if command -v readlink >/dev/null 2>&1 && readlink -f / >/dev/null 2>&1; then
+  SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+else
+  SELF="$(resolve_realpath "${BASH_SOURCE[0]}")"
+fi
+DOTFILES="$(cd "$(dirname "$SELF")/.." && pwd)"
+
+if ! command -v jq >/dev/null 2>&1; then
+  printf 'dots draft: jq is required\n' >&2
+  exit 1
+fi
+
+# ── Configuration ──────────────────────────────────────────────────────────
+STATE="${FIRST_DRAFT_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/first-draft}"
+SKILL="${FIRST_DRAFT_SKILL:-$DOTFILES/skills/first-draft}"
+NOW="${FIRST_DRAFT_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+EFFORT="${FIRST_DRAFT_EFFORT:-high}"
+MODEL="${FIRST_DRAFT_MODEL:-}"
+HOSTS_FILE="${FIRST_DRAFT_HOSTS_FILE:-$DOTFILES/config/hosts}"
+CONTEXTS_FILE="${FIRST_DRAFT_CONTEXTS_FILE:-$DOTFILES/config/contexts}"
+LEDGER="$STATE/ledger.jsonl"
+CHANGES="$STATE/changes"
+
+DIMS_JSON='["contracts","inputs","lifecycle","concurrency","partial-failure","resources","environment","callers","security","cost","verification"]'
+STEPS_TEXT="spec spec-review tests implementation code-review"
+
+default_host() {
+  if [[ -n "${DOT_MACHINE:-}" ]]; then
+    printf '%s\n' "$DOT_MACHINE"
+    return 0
+  fi
+  local f="$HOME/.config/dot/infisical.env" v
+  if [[ -f "$f" ]]; then
+    v="$(sed -n 's/^[[:space:]]*DOT_MACHINE=//p' "$f" | head -n 1)"
+    case "$v" in
+      \"*\") v="${v#\"}"; v="${v%\"}" ;;
+      \'*\') v="${v#\'}"; v="${v%\'}" ;;
+    esac
+    if [[ -n "$v" ]]; then
+      printf '%s\n' "$v"
+      return 0
+    fi
+  fi
+  hostname -s
+}
+
+default_codex() {
+  if command -v codex >/dev/null 2>&1; then
+    command -v codex
+    return 0
+  fi
+  if [[ -x "$HOME/.local/bin/codex" ]]; then
+    printf '%s\n' "$HOME/.local/bin/codex"
+    return 0
+  fi
+  if [[ -x /Applications/Codex.app/Contents/Resources/codex ]]; then
+    printf '%s\n' /Applications/Codex.app/Contents/Resources/codex
+    return 0
+  fi
+  return 0
+}
+
+HOST="${FIRST_DRAFT_HOST:-$(default_host)}"
+CODEX="${FIRST_DRAFT_CODEX:-$(default_codex)}"
+
+stamp_of() { # timestamp → the compact stamp used in ids and failed folders
+  local s="$1"
+  s="${s//:/}"
+  s="${s//-/}"
+  s="${s//Z/}"
+  printf '%s\n' "$s"
+}
+STAMP="$(stamp_of "$NOW")"
+
+# ── Small helpers ──────────────────────────────────────────────────────────
+err() { printf 'dots draft: %s\n' "$*" >&2; }
+
+usage() {
+  cat <<'EOF'
+Usage: dots draft <command> [options]
+
+Commands:
+  new <slug> --tier 1|2                  Open a change and copy the spec template
+  review <id> spec|code [--base REF] [--force]
+                                         Run one Codex review round
+  triage [--severity P1|P2|P3] <id> <finding> accept <step> <reason...>
+  triage [--severity P1|P2|P3] <id> <finding> reject <reason...>
+                                         Record a verdict on a finding
+  protect <id> <path>...                 Protect test files from edits
+  check <id>                             Check protected test files
+  close <id> merged|abandoned            Close a change
+  list [--open]                          List changes
+  show <id>                              Show a change and its findings
+  report [--since YYYY-MM-DD] [--all-hosts] [--json]
+                                         First-review measure
+  classes [--since YYYY-MM-DD] [--all-hosts]
+                                         Accepted findings by dimension and step
+  learned [note...]                      Record a learning pass
+  scrub [--allow TERM]... <file>...      Check files for client repo/path/context terms
+  help                                   Show this help
+EOF
+}
+
+valid_step() {
+  local s
+  for s in $STEPS_TEXT; do
+    [[ "$s" == "$1" ]] && return 0
+  done
+  return 1
+}
+
+valid_severity() {
+  case "$1" in
+    P1|P2|P3) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+raw_ledger() {
+  if [[ -f "$LEDGER" ]]; then
+    cat "$LEDGER"
+  fi
+}
+
+ledger_json() { # the whole ledger as one JSON array, bad lines skipped
+  raw_ledger | jq -R 'fromjson? // empty' | jq -s '.'
+}
+
+change_dir() { printf '%s/%s\n' "$CHANGES" "$1"; }
+
+require_change() {
+  local id="$1" dir
+  dir="$(change_dir "$id")"
+  if [[ ! -f "$dir/meta.json" ]]; then
+    err "no such change: $id"
+    exit 1
+  fi
+  printf '%s\n' "$dir"
+}
+
+meta_get() { # dir key
+  jq -r --arg k "$2" '.[$k] // ""' "$1/meta.json"
+}
+
+validate_findings() { # file
+  jq -e --argjson dims "$DIMS_JSON" '
+    def okstr: type == "string";
+    def oksev: . as $s | ["P1","P2","P3"] | index($s) != null;
+    def okdim: . as $s | $dims | index($s) != null;
+    (type == "object")
+    and (.summary | okstr)
+    and (.findings | type == "array")
+    and (.findings | all(
+      (.severity | okstr and oksev)
+      and (.dimension | okstr and okdim)
+      and (.title | okstr and length > 0)
+      and (.evidence | okstr)
+      and (.scenario | okstr)
+      and (.fix | okstr)
+    ))
+  ' "$1" >/dev/null 2>&1
+}
+
+# ── new ────────────────────────────────────────────────────────────────────
+cmd_new() {
+  local slug="" tier=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --tier)
+        [[ $# -ge 2 ]] || { err "--tier needs a value"; exit 2; }
+        tier="$2"
+        shift 2
+        ;;
+      --tier=*) tier="${1#*=}"; shift ;;
+      -h|--help) usage; exit 0 ;;
+      -*) err "unknown option for new: $1"; exit 2 ;;
+      *)
+        if [[ -n "$slug" ]]; then
+          err "new takes one slug"
+          exit 2
+        fi
+        slug="$1"
+        shift
+        ;;
+    esac
+  done
+  if [[ -z "$slug" ]]; then
+    err "new needs a slug"
+    exit 2
+  fi
+  if [[ -z "$tier" ]]; then
+    err "--tier is required"
+    exit 2
+  fi
+  case "$tier" in
+    1|2) ;;
+    *) err "--tier must be 1 or 2"; exit 2 ;;
+  esac
+
+  local re='^[a-z0-9][a-z0-9-]{0,39}$'
+  if ! [[ "$slug" =~ $re ]]; then
+    err "invalid slug: $slug"
+    exit 1
+  fi
+
+  local repo=""
+  repo="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+    err "not inside a git repository"
+    exit 1
+  }
+  if [[ -z "$repo" ]]; then
+    err "not inside a git repository"
+    exit 1
+  fi
+
+  local template="$SKILL/spec-template.md"
+  if [[ ! -f "$template" ]]; then
+    err "missing spec template: $template"
+    exit 1
+  fi
+
+  local origin="" base=""
+  origin="$(git -C "$repo" remote get-url origin 2>/dev/null || true)"
+  # --verify keeps an unborn branch from printing the literal "HEAD".
+  base="$(git -C "$repo" rev-parse --verify HEAD 2>/dev/null || true)"
+
+  mkdir -p "$CHANGES"
+  local id="$slug-$STAMP" base_id="$slug-$STAMP" k=1 dir
+  while [[ -e "$CHANGES/$id" ]]; do
+    k=$((k + 1))
+    id="$base_id-$k"
+  done
+  dir="$CHANGES/$id"
+  mkdir -p "$dir"
+  cp "$template" "$dir/spec.md"
+
+  jq -n -c \
+    --arg id "$id" --arg slug "$slug" --argjson tier "$tier" \
+    --arg repo "$repo" --arg origin "$origin" --arg base "$base" \
+    --arg host "$HOST" --arg opened "$NOW" \
+    '{id:$id,slug:$slug,tier:$tier,repo:$repo,origin:$origin,base:$base,
+      host:$host,opened:$opened}' > "$dir/meta.json"
+
+  jq -n -c \
+    --arg ch "$id" --arg host "$HOST" --arg at "$NOW" --argjson tier "$tier" \
+    --arg repo "$repo" --arg origin "$origin" --arg base "$base" \
+    '{v:1,type:"change",change:$ch,host:$host,at:$at,tier:$tier,
+      repo:$repo,origin:$origin,base:$base}' >> "$LEDGER"
+
+  printf 'change  %s\n' "$id"
+  printf 'folder  %s\n' "$dir"
+  printf 'spec    %s/spec.md\n' "$dir"
+}
+
+# ── review ─────────────────────────────────────────────────────────────────
+cmd_review() {
+  local id="" kind="" base_opt="" force=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --base)
+        [[ $# -ge 2 ]] || { err "--base needs a value"; exit 2; }
+        base_opt="$2"
+        shift 2
+        ;;
+      --base=*) base_opt="${1#*=}"; shift ;;
+      --force) force=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      -*) err "unknown option for review: $1"; exit 2 ;;
+      *)
+        if [[ -z "$id" ]]; then
+          id="$1"
+        elif [[ -z "$kind" ]]; then
+          kind="$1"
+        else
+          err "review takes an id and a kind"
+          exit 2
+        fi
+        shift
+        ;;
+    esac
+  done
+  if [[ -z "$id" || -z "$kind" ]]; then
+    err "usage: dots draft review <id> spec|code [--base REF] [--force]"
+    exit 2
+  fi
+  case "$kind" in
+    spec) ;;
+    code) ;;
+    *) err "kind must be spec or code"; exit 2 ;;
+  esac
+
+  local dir repo tier meta_base
+  dir="$(require_change "$id")"
+  repo="$(meta_get "$dir" repo)"
+  tier="$(jq -r '.tier' "$dir/meta.json")"
+  meta_base="$(meta_get "$dir" base)"
+
+  if [[ ! -d "$repo" ]]; then
+    err "repo folder not found: $repo"
+    exit 1
+  fi
+
+  if [[ -z "$CODEX" ]] || ! command -v "$CODEX" >/dev/null 2>&1; then
+    err "codex not found; install it or set FIRST_DRAFT_CODEX"
+    exit 1
+  fi
+
+  if ! mkdir "$dir/review.lock" 2>/dev/null; then
+    err "a review of $id is already running; remove $dir/review.lock if it is not"
+    exit 1
+  fi
+  REVIEW_LOCK="$dir/review.lock"
+
+  # Round numbers come from the ledger, so a killed review that left a folder
+  # behind cannot skip a round and corrupt the measure.
+  local maxr="" n prev
+  maxr="$(ledger_json | jq -r --arg ch "$id" --arg kind "$kind" '
+    [ .[] | select(.type=="round" and .change==$ch and .kind==$kind) | .round ]
+    | if length == 0 then 0 else max end
+  ')"
+  n=$((maxr + 1))
+  prev=$((n - 1))
+
+  if [[ -e "$dir/rounds/$kind-$n" ]]; then
+    local interrupted="$dir/failed/$kind-$n-$STAMP-interrupted" ii=2
+    mkdir -p "$dir/failed"
+    while [[ -e "$interrupted" ]]; do
+      interrupted="$dir/failed/$kind-$n-$STAMP-interrupted-$ii"
+      ii=$((ii + 1))
+    done
+    mv "$dir/rounds/$kind-$n" "$interrupted"
+    err "moved an interrupted round to $interrupted"
+  fi
+
+  if [[ "$force" -eq 0 && "$prev" -ge 1 ]]; then
+    local untriaged
+    untriaged="$(ledger_json | jq -r \
+      --arg ch "$id" --arg kind "$kind" --argjson r "$prev" '
+        . as $rows
+        | [ $rows[] | select(.type=="triage" and .change==$ch) | .finding ] as $ts
+        | [ $rows[]
+            | select(.type=="finding" and .change==$ch and .kind==$kind and .round==$r)
+            | select((.id as $i | ($ts | index($i)) == null))
+          ] | length
+      ')"
+    if [[ "$untriaged" != "0" ]]; then
+      err "round $prev has untriaged findings; triage them first (dots draft show $id)"
+      exit 1
+    fi
+  fi
+
+  local template="$SKILL/briefs/$kind-review.md"
+  if [[ ! -f "$template" ]]; then
+    err "missing review brief: $template"
+    exit 1
+  fi
+  local version
+  version="$(awk '
+    BEGIN { inb = 0 }
+    NR == 1 && /^---[[:space:]]*$/ { inb = 1; next }
+    inb && /^---[[:space:]]*$/ { exit }
+    inb && /^version:/ {
+      sub(/^version:[[:space:]]*/, "");
+      sub(/[[:space:]]+$/, "");
+      print;
+      exit
+    }
+  ' "$template")"
+  if [[ -z "$version" ]]; then
+    err "missing version in $template front matter"
+    exit 1
+  fi
+  if [[ ! -f "$SKILL/dimensions.md" ]]; then
+    err "missing dimensions: $SKILL/dimensions.md"
+    exit 1
+  fi
+
+  local rdir="$dir/rounds/$kind-$n"
+  mkdir -p "$rdir"
+  local brief="$rdir/brief.md"
+  {
+    awk 'BEGIN { f = 0 } f >= 2 { print; next } /^---[[:space:]]*$/ { f++ }' "$template"
+    printf '\n## Change under review\n\n'
+    printf -- '- Change ID: %s\n' "$id"
+    printf -- '- Repository: %s\n' "$repo"
+    printf -- '- Tier: %s\n' "$tier"
+    if [[ "$kind" == "code" ]]; then
+      local base="$meta_base"
+      [[ -n "$base_opt" ]] && base="$base_opt"
+      printf -- '- Base commit: %s\n' "$base"
+      # shellcheck disable=SC2016 # the backticks are literal brief text
+      printf -- '- The change is everything in `git diff %s` plus the untracked files that `git status --porcelain` lists. Read whole files, not only the diff.\n' "$base"
+    fi
+    printf '\n## Spec\n\n'
+    cat "$dir/spec.md"
+  } > "$brief"
+
+  local earlier
+  earlier="$(ledger_json | jq -r \
+    --arg ch "$id" --arg kind "$kind" --argjson n "$n" '
+      . as $rows
+      | [ $rows[] | select(.type=="triage" and .change==$ch) ] as $ts
+      | [ $rows[]
+          | select(.type=="finding" and .change==$ch and .kind==$kind and .round < $n)
+        ]
+      | sort_by(.round, .id)[]
+      | . as $f
+      | ([ $ts[] | select(.finding==$f.id) ] | last) as $t
+      | select($t != null)
+      | "- \($f.id) [\(if $t.verdict == "accept" then "accepted" else "rejected" end)] \(if $t.severity != null then $t.severity else $f.severity end) \($f.dimension): \($f.title). Reason: \($t.reason)"
+    ')"
+  if [[ -n "$earlier" ]]; then
+    {
+      printf '\n## Earlier rounds\n\n'
+      printf 'These findings were triaged in earlier rounds. Do not raise a rejected finding again unless you have new evidence; if you do, say what is new.\n\n'
+      printf '%s\n' "$earlier"
+    } >> "$brief"
+  fi
+
+  {
+    printf '\n## Dimensions and severity\n\n'
+    cat "$SKILL/dimensions.md"
+  } >> "$brief"
+
+  local findings="$rdir/findings.json"
+  local -a args
+  args=("exec" "-C" "$repo" "--skip-git-repo-check" "--sandbox" "read-only" \
+        "--ephemeral" "-c" "model_reasoning_effort=\"$EFFORT\"")
+  [[ -n "$MODEL" ]] && args+=("-m" "$MODEL")
+  args+=("--output-schema" "$SKILL/schemas/findings.schema.json" \
+         "-o" "$findings" "-")
+
+  local rc=0
+  "$CODEX" "${args[@]}" < "$brief" > "$rdir/codex.log" 2>&1 || rc=$?
+
+  fail_round() {
+    local dest="$dir/failed/$kind-$n-$STAMP"
+    mkdir -p "$dir/failed"
+    if [[ -e "$dest" ]]; then
+      local i=2
+      while [[ -e "$dest-$i" ]]; do i=$((i + 1)); done
+      dest="$dest-$i"
+    fi
+    mv "$rdir" "$dest"
+    err "codex review failed; log: $dest/codex.log"
+    exit 1
+  }
+
+  if [[ "$rc" -ne 0 ]]; then
+    fail_round
+  fi
+  if [[ ! -f "$findings" ]]; then
+    fail_round
+  fi
+  if ! validate_findings "$findings"; then
+    fail_round
+  fi
+
+  local revver="" model=""
+  revver="$("$CODEX" --version 2>/dev/null | head -n 1 || true)"
+  model="$(awk '/model:/{ sub(/^.*model:[[:space:]]*/, ""); print; exit }' "$rdir/codex.log")"
+
+  jq -c \
+    --arg ch "$id" --arg host "$HOST" --arg at "$NOW" \
+    --arg kind "$kind" --argjson n "$n" --arg briefv "$version" \
+    --arg revver "$revver" --arg model "$model" '
+      {v:1,type:"round",change:$ch,host:$host,at:$at,kind:$kind,round:$n,
+       brief:($kind + "-review"),brief_version:$briefv,reviewer:"codex",
+       reviewer_version:$revver,model:$model,findings:(.findings | length)},
+      (.findings | to_entries[]
+       | .key as $i | .value as $f
+       | {v:1,type:"finding",change:$ch,host:$host,at:$at,kind:$kind,round:$n,
+          id:((if $kind == "spec" then "s" else "c" end) + ($n | tostring)
+              + "-" + (($i + 1) | tostring)),
+          severity:$f.severity,dimension:$f.dimension,title:$f.title,
+          evidence:$f.evidence,scenario:$f.scenario,fix:$f.fix})
+    ' "$findings" >> "$LEDGER"
+
+  local count p1 p2 p3
+  count="$(jq '.findings | length' "$findings")"
+  p1="$(jq '[.findings[] | select(.severity == "P1")] | length' "$findings")"
+  p2="$(jq '[.findings[] | select(.severity == "P2")] | length' "$findings")"
+  p3="$(jq '[.findings[] | select(.severity == "P3")] | length' "$findings")"
+
+  printf '%s review round %s of %s: %s findings (P1 %s, P2 %s, P3 %s)\n' \
+    "$kind" "$n" "$id" "$count" "$p1" "$p2" "$p3"
+  jq -r --arg kind "$kind" --argjson n "$n" '
+    .findings | to_entries[]
+    | .key as $i | .value as $f
+    | ((if $kind == "spec" then "s" else "c" end) + ($n | tostring)
+       + "-" + (($i + 1) | tostring))
+      + "  " + $f.severity + "  " + $f.dimension + "  " + $f.title
+      + "\n      evidence: " + $f.evidence
+  ' "$findings"
+  printf 'summary: %s\n' "$(jq -r '.summary' "$findings")"
+  printf 'next: dots draft triage %s <finding> accept <step> <reason>   or   reject <reason>\n' "$id"
+}
+
+# ── triage ─────────────────────────────────────────────────────────────────
+cmd_triage() {
+  local severity=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --severity)
+        [[ $# -ge 2 ]] || { err "--severity needs a value"; exit 2; }
+        severity="$2"
+        shift 2
+        ;;
+      --severity=*) severity="${1#*=}"; shift ;;
+      -h|--help) usage; exit 0 ;;
+      -*) err "unknown option for triage: $1"; exit 2 ;;
+      *) break ;;
+    esac
+  done
+  if [[ -n "$severity" ]] && ! valid_severity "$severity"; then
+    err "--severity must be P1, P2 or P3"
+    exit 1
+  fi
+  if [[ $# -lt 3 ]]; then
+    err "usage: dots draft triage [--severity P1|P2|P3] <id> <finding> accept <step> <reason...> | reject <reason...>"
+    exit 2
+  fi
+
+  local id="$1" finding="$2" verdict="$3"
+  shift 3
+  case "$verdict" in
+    accept|reject) ;;
+    *) err "verdict must be accept or reject"; exit 1 ;;
+  esac
+
+  local step="" reason=""
+  if [[ "$verdict" == "accept" ]]; then
+    [[ $# -ge 1 ]] || { err "accept needs a step and a reason"; exit 1; }
+    step="$1"
+    shift
+    if ! valid_step "$step"; then
+      err "unknown step: $step"
+      exit 1
+    fi
+    [[ $# -ge 1 ]] || { err "reason is required"; exit 1; }
+    reason="$*"
+  else
+    [[ $# -ge 1 ]] || { err "reason is required"; exit 1; }
+    reason="$*"
+  fi
+
+  require_change "$id" >/dev/null
+  local found
+  found="$(ledger_json | jq -r --arg ch "$id" --arg f "$finding" \
+    '[.[] | select(.type=="finding" and .change==$ch and .id==$f)] | length')"
+  if [[ "$found" == "0" ]]; then
+    err "unknown finding: $finding"
+    exit 1
+  fi
+
+  jq -n -c \
+    --arg ch "$id" --arg host "$HOST" --arg at "$NOW" --arg f "$finding" \
+    --arg verdict "$verdict" --arg step "$step" --arg sev "$severity" \
+    --arg reason "$reason" \
+    '{v:1,type:"triage",change:$ch,host:$host,at:$at,finding:$f,
+      verdict:$verdict,step:(if $step == "" then null else $step end),
+      severity:(if $sev == "" then null else $sev end),reason:$reason}' >> "$LEDGER"
+
+  printf '%s: %sed\n' "$finding" "$verdict"
+}
+
+# ── protect / check ────────────────────────────────────────────────────────
+cmd_protect() {
+  if [[ $# -lt 2 ]]; then
+    err "usage: dots draft protect <id> <path>..."
+    exit 2
+  fi
+  local id="$1" dir repo repo_real
+  shift
+  dir="$(require_change "$id")"
+  repo="$(meta_get "$dir" repo)"
+  if [[ ! -d "$repo" ]]; then
+    err "repo folder not found: $repo"
+    exit 1
+  fi
+  repo_real="$(cd "$repo" && pwd -P)"
+
+  local tmp="$dir/protected.tsv.tmp"
+  : > "$tmp"
+  local p abs absdir rel h count=0
+  for p in "$@"; do
+    if [[ "$p" = /* ]]; then
+      abs="$p"
+    else
+      abs="$repo_real/$p"
+    fi
+    if [[ ! -f "$abs" ]]; then
+      rm -f "$tmp"
+      err "not a file: $p"
+      exit 1
+    fi
+    absdir="$(cd "$(dirname "$abs")" && pwd -P)"
+    abs="$absdir/$(basename "$abs")"
+    case "$abs" in
+      "$repo_real"/*) rel="${abs#"$repo_real"/}" ;;
+      *)
+        rm -f "$tmp"
+        err "path is outside the repo: $p"
+        exit 1
+        ;;
+    esac
+    h="$(git -C "$repo_real" hash-object -- "$abs")"
+    printf '%s\t%s\n' "$h" "$rel" >> "$tmp"
+    count=$((count + 1))
+  done
+  mv "$tmp" "$dir/protected.tsv"
+  printf 'protected %s test file(s)\n' "$count"
+}
+
+cmd_check() {
+  if [[ $# -ne 1 ]]; then
+    err "usage: dots draft check <id>"
+    exit 2
+  fi
+  local id="$1" dir repo pf
+  dir="$(require_change "$id")"
+  repo="$(meta_get "$dir" repo)"
+  pf="$dir/protected.tsv"
+  if [[ ! -f "$pf" ]]; then
+    printf 'no protected tests\n'
+    exit 0
+  fi
+  if [[ ! -d "$repo" ]]; then
+    err "repo folder not found: $repo"
+    exit 1
+  fi
+
+  local h rel count=0 bad=0 f nowh
+  while IFS=$'\t' read -r h rel || [[ -n "${rel:-}" ]]; do
+    [[ -n "${rel:-}" ]] || continue
+    count=$((count + 1))
+    f="$repo/$rel"
+    if [[ ! -f "$f" ]]; then
+      printf 'missing: %s\n' "$rel"
+      bad=1
+      continue
+    fi
+    nowh="$(git -C "$repo" hash-object -- "$f")"
+    if [[ "$nowh" != "$h" ]]; then
+      printf 'changed: %s\n' "$rel"
+      bad=1
+    fi
+  done < "$pf"
+  if [[ "$bad" -ne 0 ]]; then
+    exit 1
+  fi
+  printf 'protected tests unchanged (%s)\n' "$count"
+}
+
+# ── close / list / show ────────────────────────────────────────────────────
+cmd_close() {
+  if [[ $# -ne 2 ]]; then
+    err "usage: dots draft close <id> merged|abandoned"
+    exit 2
+  fi
+  local id="$1" outcome="$2"
+  case "$outcome" in
+    merged|abandoned) ;;
+    *) err "outcome must be merged or abandoned"; exit 2 ;;
+  esac
+  require_change "$id" >/dev/null
+  jq -n -c --arg ch "$id" --arg host "$HOST" --arg at "$NOW" \
+    --arg outcome "$outcome" \
+    '{v:1,type:"close",change:$ch,host:$host,at:$at,outcome:$outcome}' >> "$LEDGER"
+  printf '%s: %s\n' "$id" "$outcome"
+}
+
+cmd_list() {
+  local open=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --open) open=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) err "unknown option for list: $1"; exit 2 ;;
+    esac
+  done
+  ledger_json | jq -r --argjson open "$open" '
+    . as $rows
+    | ([ $rows[] | select(.type=="change") ] | sort_by(.at, .change))
+    | .[]
+    | . as $c
+    | ([ $rows[] | select(.type=="close" and .change==$c.change) ] | last) as $close
+    | (if $close == null then "open" else $close.outcome end) as $status
+    | select(($open == 0) or ($status == "open"))
+    | ([ $rows[]
+         | select(.type=="round" and .change==$c.change and .kind=="code")
+         | .round ] | if length == 0 then 0 else max end) as $cr
+    | ([ $rows[] | select(.type=="finding" and .change==$c.change) ] as $fs
+       | [ $rows[] | select(.type=="triage" and .change==$c.change) | .finding ] as $ts
+       | [ $fs[] | select(.id as $i | ($ts | index($i)) == null) ] | length) as $u
+    | "\($c.change)  tier \($c.tier)  \($status)  \($c.repo | sub(".*/"; ""))  code rounds \($cr)  untriaged \($u)"
+  '
+}
+
+cmd_show() {
+  if [[ $# -ne 1 ]]; then
+    err "usage: dots draft show <id>"
+    exit 2
+  fi
+  local id="$1" dir
+  dir="$(require_change "$id")"
+  printf 'change  %s\n' "$id"
+  printf 'slug    %s\n' "$(meta_get "$dir" slug)"
+  printf 'tier    %s\n' "$(jq -r '.tier' "$dir/meta.json")"
+  printf 'repo    %s\n' "$(meta_get "$dir" repo)"
+  printf 'origin  %s\n' "$(meta_get "$dir" origin)"
+  printf 'base    %s\n' "$(meta_get "$dir" base)"
+  printf 'host    %s\n' "$(meta_get "$dir" host)"
+  printf 'opened  %s\n' "$(meta_get "$dir" opened)"
+  printf 'spec    %s/spec.md\n' "$dir"
+
+  ledger_json | jq -r --arg ch "$id" '
+    . as $rows
+    | [ $rows[] | select(.type=="round" and .change==$ch) ]
+    | sort_by((if .kind == "spec" then 0 else 1 end), .round)
+    | .[]
+    | . as $r
+    | "\($r.kind) round \($r.round)  brief v\($r.brief_version)  \(
+        ([ $rows[]
+           | select(.type=="finding" and .change==$ch
+                    and .kind==$r.kind and .round==$r.round) ] | length)) findings",
+      ([ $rows[]
+         | select(.type=="finding" and .change==$ch
+                  and .kind==$r.kind and .round==$r.round) ]
+       | sort_by(.id)[]
+       | . as $f
+       | ([ $rows[] | select(.type=="triage" and .change==$ch and .finding==$f.id) ] | last) as $t
+       | "  \($f.id)  \($f.severity)  \($f.dimension)  \($f.title)  -> \(if $t == null then "untriaged" elif $t.verdict == "accept" then "accept \($t.step)" else "reject" end)\(if $t == null then "" else "  \($t.reason)" end)")
+  '
+}
+
+# ── row loading (local + peers) ────────────────────────────────────────────
+load_rows() { # all-hosts (1 or 0) → one JSON array, deduplicated and in time order
+  local all_hosts="$1"
+  if [[ "$all_hosts" -eq 1 && -f "$HOSTS_FILE" ]]; then
+    {
+      raw_ledger
+      local machine target repo_ignored peer
+      while read -r machine target repo_ignored || [[ -n "${machine:-}" ]]; do
+        [[ -z "${machine:-}" || "$machine" == "#"* ]] && continue
+        [[ -n "${target:-}" ]] || continue
+        : "$repo_ignored"
+        [[ "$machine" == "$HOST" ]] && continue
+        # shellcheck disable=SC2016,SC2029 # the peer expands HOME and XDG itself
+        if ! peer="$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$target" \
+            'cat "${XDG_STATE_HOME:-$HOME/.local/state}/first-draft/ledger.jsonl" 2>/dev/null || true' 2>/dev/null)"; then
+          printf 'dots draft: could not read the ledger on %s\n' "$machine" >&2
+          continue
+        fi
+        printf '%s\n' "$peer"
+      done < "$HOSTS_FILE"
+    } | jq -R 'fromjson? // empty' | jq -s 'unique | sort_by(.at)'
+  else
+    raw_ledger | jq -R 'fromjson? // empty' | jq -s 'unique | sort_by(.at)'
+  fi
+}
+
+# ── report ─────────────────────────────────────────────────────────────────
+# shellcheck disable=SC2016 # jq programs use $names that the shell must not expand
+REPORT_JSON='
+  def r2: ((. * 100) | round) / 100;
+  def latest_triage($ts; $ch; $fid):
+    ([ $ts[] | select(.change == $ch and .finding == $fid) ] | last);
+  . as $rows
+  | [ $rows[] | select(.type=="change") ] as $changes
+  | [ $rows[] | select(.type=="triage") ] as $ts
+  | [ $changes[]
+      | select($since_at == "" or .at >= $since_at)
+      | . as $c
+      | [ $rows[]
+          | select(.type=="round" and .change==$c.change and .kind=="code")
+          | .round ] as $crs
+      | select(($crs | length) > 0)
+      | ([ $rows[]
+           | select(.type=="round" and .change==$c.change and .kind=="spec")
+           | .round ]) as $srs
+      | ([ $rows[]
+           | select(.type=="round" and .change==$c.change
+                    and .kind=="code" and .round==1) ] | first) as $cr1
+      | ([ $rows[] | select(.type=="finding" and .change==$c.change) ]) as $fs
+      | [ $fs[]
+          | . as $f
+          | (latest_triage($ts; $c.change; $f.id)) as $t
+          | {f:$f, t:$t,
+             sev:(if ($t != null and $t.severity != null) then $t.severity else $f.severity end)}
+        ] as $fs2
+      | {change:$c.change, tier:$c.tier,
+         code_rounds:($crs | max),
+         spec_rounds:(if ($srs | length) > 0 then ($srs | max) else 0 end),
+         brief_version:($cr1.brief_version // ""),
+         p1_first:([ $fs2[]
+                     | select(.f.kind=="code" and .f.round==1
+                              and .t != null and .t.verdict=="accept"
+                              and .sev=="P1") ] | length),
+         accepted:([ $fs2[] | select(.t != null and .t.verdict=="accept") ] | length),
+         rejected:([ $fs2[] | select(.t != null and .t.verdict=="reject") ] | length),
+         untriaged:([ $fs2[] | select(.t == null) ] | length),
+         steps:[ $fs2[]
+                 | select(.t != null and .t.verdict=="accept")
+                 | {dimension:.f.dimension, step:(.t.step // "")} ]}
+    ] as $rep
+  | ($rep | length) as $n
+  | ([ $rep[].accepted ] | add // 0) as $acc
+  | ([ $rep[].rejected ] | add // 0) as $rej
+  | ([ $rows[] | select(.type=="learn") | .at ] | last) as $learn
+  | ([ $rows[] | select(.type=="close") | {change:.change, at:.at} ]
+     | group_by(.change) | map(last | select($learn == null or .at > $learn))
+     | length) as $closed
+  | {changes: $n,
+     tier1: ([$rep[] | select(.tier == 1)] | length),
+     tier2: ([$rep[] | select(.tier == 2)] | length),
+     zero_p1_first: ([$rep[] | select(.p1_first == 0)] | length),
+     zero_p1_rate: (if $n == 0 then null
+                    else ((([$rep[] | select(.p1_first == 0)] | length) / $n) | r2) end),
+     mean_p1_first: (if $n == 0 then null
+                     else ((([$rep[].p1_first] | add // 0) / $n) | r2) end),
+     code_rounds_mean: (if $n == 0 then null
+                        else ((([$rep[].code_rounds] | add) / $n) | r2) end),
+     code_rounds_max: (if $n == 0 then 0 else ([$rep[].code_rounds] | max) end),
+     spec_rounds_mean: (([$rep[] | select(.spec_rounds > 0) | .spec_rounds]) as $s
+                        | if ($s | length) == 0 then null
+                          else ((($s | add) / ($s | length)) | r2) end),
+     accepted: $acc,
+     rejected: $rej,
+     precision: (if ($acc + $rej) == 0 then null
+                 else (($acc / ($acc + $rej)) | r2) end),
+     untriaged: ([$rep[].untriaged] | add // 0),
+     by_brief_version: ([ $rep | group_by(.brief_version)[]
+                          | {version:(.[0].brief_version), changes:length,
+                             zero_p1:([.[] | select(.p1_first == 0)] | length),
+                             mean_p1:((map(.p1_first) | add / length) | r2)} ]
+                        | sort_by(.version)),
+     by_dimension: ([ $rep[].steps[] ]
+                    | group_by(.dimension)
+                    | map({dimension: .[0].dimension, accepted: length,
+                           steps:(group_by(.step)
+                                  | map({key:(.[0].step), value:length})
+                                  | from_entries)})
+                    | sort_by(-.accepted, .dimension)),
+     closed_since_learn: $closed,
+     hosts: ([ $rows[].host ] | map(select(. != null)) | unique),
+     since: (if $since == "" then null else $since end)}
+'
+
+REPORT_TEXT='
+  def pct: ((. * 100) | round);
+  "first-draft report  (hosts: \(.hosts | join(", ")); since: \(if .since == null then "all time" else .since end))",
+  (if .changes == 0 then
+     "no changes with a code review yet"
+   else
+     "changes with a code review       \(.changes)  (tier 1: \(.tier1), tier 2: \(.tier2))",
+     "first review with 0 accepted P1  \(.zero_p1_first)/\(.changes)  \(.zero_p1_rate | pct)%",
+     "accepted P1 per first review     \(.mean_p1_first)",
+     "code review rounds               mean \(.code_rounds_mean), max \(.code_rounds_max)",
+     "spec review rounds               mean \(if .spec_rounds_mean == null then "-" else .spec_rounds_mean end)",
+     "reviewer precision               \(if .precision == null then "-" else "\(.precision | pct)%" end)  (\(.accepted) accepted / \(.accepted + .rejected) triaged)",
+     "untriaged findings               \(.untriaged)",
+     "closed since last learning pass  \(.closed_since_learn)",
+     "",
+     "by code-review brief version",
+     (.by_brief_version[] | "  v\(.version)  \(.changes) changes  0 P1: \(.zero_p1)/\(.changes)  mean P1 \(.mean_p1)"),
+     "accepted findings by dimension",
+     (.by_dimension[] | "  \(.dimension)  \(.accepted)  (\(.steps | to_entries | sort_by(.key) | map("\(.key) \(.value)") | join(", ")))")
+   end)
+'
+
+cmd_report() {
+  local since="" all_hosts=0 as_json=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --since)
+        [[ $# -ge 2 ]] || { err "--since needs a date"; exit 2; }
+        since="$2"
+        shift 2
+        ;;
+      --since=*) since="${1#*=}"; shift ;;
+      --all-hosts) all_hosts=1; shift ;;
+      --json) as_json=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) err "unknown option for report: $1"; exit 2 ;;
+    esac
+  done
+  local since_at="" rows report
+  [[ -n "$since" ]] && since_at="${since}T00:00:00Z"
+  rows="$(load_rows "$all_hosts")"
+  report="$(printf '%s\n' "$rows" | jq -c --arg since "$since" --arg since_at "$since_at" "$REPORT_JSON")"
+  if [[ "$as_json" -eq 1 ]]; then
+    printf '%s\n' "$report"
+  else
+    printf '%s\n' "$report" | jq -r "$REPORT_TEXT"
+  fi
+}
+
+# ── classes ────────────────────────────────────────────────────────────────
+# shellcheck disable=SC2016 # jq programs use $names that the shell must not expand
+CLASSES_JQ='
+  . as $rows
+  | [ $rows[] | select(.type=="triage") ] as $ts
+  | [ $rows[]
+      | select(.type=="finding")
+      | . as $f
+      | ([ $ts[] | select(.change == $f.change and .finding == $f.id) ] | last) as $t
+      | select($t != null and $t.verdict == "accept")
+      | select($since == "" or $t.at > $since)
+      | {dimension:$f.dimension, step:($t.step // ""), id:$f.id,
+         change:$f.change, title:$f.title}
+    ] as $acc
+  | "accepted findings since \(if $since == "" then "the start" else $since end)  (\($acc | length) findings)",
+    ( $acc
+      | group_by(.dimension)
+      | .[]
+      | "\(.[0].dimension) (\(length))",
+        ( group_by(.step)
+          | .[]
+          | "  \(.[0].step) (\(length))",
+            ( sort_by(.id)[] | "    \(.id)  \(.change)  \(.title)" ) )
+    )
+'
+
+cmd_classes() {
+  local since="" all_hosts=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --since)
+        [[ $# -ge 2 ]] || { err "--since needs a date"; exit 2; }
+        since="$2"
+        shift 2
+        ;;
+      --since=*) since="${1#*=}"; shift ;;
+      --all-hosts) all_hosts=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) err "unknown option for classes: $1"; exit 2 ;;
+    esac
+  done
+  local rows since_at=""
+  rows="$(load_rows "$all_hosts")"
+  if [[ -n "$since" ]]; then
+    since_at="${since}T00:00:00Z"
+  else
+    since_at="$(printf '%s\n' "$rows" | jq -r '[.[] | select(.type=="learn") | .at] | last // ""')"
+  fi
+  printf '%s\n' "$rows" | jq -r --arg since "$since_at" "$CLASSES_JQ"
+}
+
+# ── learned ────────────────────────────────────────────────────────────────
+cmd_learned() {
+  local note="$*"
+  mkdir -p "$STATE"
+  jq -n -c --arg host "$HOST" --arg at "$NOW" --arg note "$note" \
+    '{v:1,type:"learn",host:$host,at:$at,note:$note}' >> "$LEDGER"
+  printf 'learning pass recorded at %s\n' "$NOW"
+}
+
+# ── scrub ──────────────────────────────────────────────────────────────────
+SCRUB_TMP=""
+REVIEW_LOCK=""
+cleanup_tmp() {
+  if [[ -n "${SCRUB_TMP:-}" ]]; then
+    rm -rf "$SCRUB_TMP"
+    SCRUB_TMP=""
+  fi
+  if [[ -n "${REVIEW_LOCK:-}" ]]; then
+    rm -rf "$REVIEW_LOCK"
+    REVIEW_LOCK=""
+  fi
+}
+trap cleanup_tmp EXIT
+
+cmd_scrub() {
+  local allow_file terms_file files_file raw common hits_file
+  SCRUB_TMP="$(mktemp -d "${TMPDIR:-/tmp}/dots-draft.XXXXXX")"
+  allow_file="$SCRUB_TMP/allow"
+  terms_file="$SCRUB_TMP/terms"
+  files_file="$SCRUB_TMP/files"
+  raw="$SCRUB_TMP/raw"
+  common="$SCRUB_TMP/common"
+  hits_file="$SCRUB_TMP/hits"
+  : > "$allow_file"
+  : > "$files_file"
+  : > "$raw"
+  : > "$hits_file"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --allow)
+        [[ $# -ge 2 ]] || { err "--allow needs a term"; exit 2; }
+        printf '%s\n' "$2" >> "$allow_file"
+        shift 2
+        ;;
+      --allow=*) printf '%s\n' "${1#*=}" >> "$allow_file"; shift ;;
+      -h|--help) usage; exit 0 ;;
+      -*) err "unknown option for scrub: $1"; exit 2 ;;
+      *) printf '%s\n' "$1" >> "$files_file"; shift ;;
+    esac
+  done
+  if [[ ! -s "$files_file" ]]; then
+    err "usage: dots draft scrub [--allow TERM]... <file>..."
+    exit 2
+  fi
+
+  if [[ ! -f "$LEDGER" && ! -f "$CONTEXTS_FILE" ]]; then
+    printf 'scrub: nothing to check\n'
+    exit 0
+  fi
+
+  cat > "$common" <<'EOF'
+readme
+index
+main
+master
+src
+lib
+test
+tests
+spec
+config
+utils
+docs
+app
+bin
+scripts
+package
+dotfiles
+skills
+first-draft
+github.com
+gitlab.com
+api
+web
+www
+server
+client
+clients
+backend
+frontend
+service
+services
+core
+tools
+infra
+data
+platform
+deploy
+EOF
+
+  if [[ -f "$LEDGER" ]]; then
+    ledger_json | jq -r '
+      . as $rows
+      | [ $rows[] | select(.type=="change") ][]
+      | ((.repo // "") | sub(".*/"; "")),
+        ((.origin // "")
+         | if . == "" then empty
+           else
+             ( sub("^[A-Za-z][A-Za-z0-9+.-]*://"; "")
+               | sub("^[^@/]*@"; "")
+               | sub("^[^/:]*[:/]"; "")
+               | split("/")[]
+               | sub("\\.git$"; "")
+               | select(. != "")
+             )
+           end)
+    ' >> "$raw"
+
+    ledger_json | jq -r '
+      .[] | select(.type=="finding") | (.evidence // "") as $e
+      | ( $e | scan("[A-Za-z0-9_.-]*/[A-Za-z0-9_./-]+|[A-Za-z0-9_-]+\\.[A-Za-z][A-Za-z0-9]{0,5}") )
+      | sub(":.*$"; "") as $tok
+      | $tok, ($tok | sub(".*/"; ""))
+    ' >> "$raw"
+  fi
+
+  if [[ -f "$CONTEXTS_FILE" ]]; then
+    local line cname c2 c3 rest pat p seg first old_ifs
+    while IFS= read -r line; do
+      line="${line#"${line%%[![:space:]]*}"}"
+      case "$line" in
+        ''|'#'*) continue ;;
+      esac
+      cname=""
+      c2=""
+      c3=""
+      rest=""
+      read -r cname c2 c3 rest <<EOF
+$line
+EOF
+      : "$c2" "$c3"
+      [[ -n "$cname" ]] && printf '%s\n' "$cname" >> "$raw"
+      old_ifs="$IFS"
+      IFS=' '
+      # shellcheck disable=SC2086 # a whitespace-split list of glob patterns
+      for pat in $rest; do
+        IFS="$old_ifs"
+        p="$(printf '%s' "$pat" | sed -e 's/\[\:\/\]/\//g' -e 's/\*//g' -e 's/\.git//g')"
+        first=1
+        old_ifs="$IFS"
+        IFS='/'
+        # shellcheck disable=SC2086 # split the pattern into path segments
+        for seg in $p; do
+          IFS="$old_ifs"
+          if [[ "$first" -eq 1 ]]; then
+            first=0
+            continue
+          fi
+          [[ -n "$seg" ]] && printf '%s\n' "$seg" >> "$raw"
+        done
+      done
+      IFS="$old_ifs"
+    done < "$CONTEXTS_FILE"
+  fi
+
+  : > "$terms_file"
+  local t
+  while IFS= read -r t; do
+    [[ ${#t} -ge 3 ]] || continue
+    if grep -Fxq -- "$t" "$allow_file"; then
+      continue
+    fi
+    if grep -Fxiq -- "$t" "$common"; then
+      continue
+    fi
+    printf '%s\n' "$t" >> "$terms_file"
+  done < "$raw"
+  sort -u "$terms_file" -o "$terms_file"
+
+  local f hits hit ln term termcount=0
+  while IFS= read -r f; do
+    [[ -f "$f" ]] || { err "no such file: $f"; exit 1; }
+  done < "$files_file"
+
+  while IFS= read -r term; do
+    termcount=$((termcount + 1))
+    while IFS= read -r f; do
+      if hits="$(grep -n -i -w -F -- "$term" "$f" 2>/dev/null)"; then
+        printf '%s\n' "$hits" | while IFS= read -r hit; do
+          ln="${hit%%:*}"
+          printf '%s:%s: names "%s"\n' "$f" "$ln" "$term"
+          printf 'hit\n' >> "$hits_file"
+        done
+      fi
+    done < "$files_file"
+  done < "$terms_file"
+
+  if [[ -s "$hits_file" ]]; then
+    exit 1
+  fi
+  printf 'scrub: ok (%s terms checked)\n' "$termcount"
+}
+
+# ── Dispatch ───────────────────────────────────────────────────────────────
+cmd="${1:-help}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+
+case "$cmd" in
+  new) cmd_new "$@" ;;
+  review) cmd_review "$@" ;;
+  triage) cmd_triage "$@" ;;
+  protect) cmd_protect "$@" ;;
+  check) cmd_check "$@" ;;
+  close) cmd_close "$@" ;;
+  list) cmd_list "$@" ;;
+  show) cmd_show "$@" ;;
+  report) cmd_report "$@" ;;
+  classes) cmd_classes "$@" ;;
+  learned) cmd_learned "$@" ;;
+  scrub) cmd_scrub "$@" ;;
+  help|-h|--help) usage; exit 0 ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

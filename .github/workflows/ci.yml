@@ -19,7 +19,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y zsh shellcheck
       - name: ShellCheck
         run: >-
-          shellcheck -x bin/dots bin/dots-secret bin/dots-agents bin/claude-ctx bin/shims/claude bootstrap hooks/pre-commit scripts/*.sh
+          shellcheck -x bin/dots bin/dots-draft bin/dots-secret bin/dots-agents bin/claude-ctx bin/shims/claude bootstrap hooks/pre-commit scripts/*.sh
           stow/common/tmux/.config/tmux/*.sh
       - name: zsh syntax
         run: |
@@ -49,6 +49,8 @@ jobs:
         run: bash scripts/test-dots-version.sh
       - name: dots doctor tests
         run: bash scripts/test-dots-doctor.sh
+      - name: dots draft tests
+        run: bash scripts/test-dots-draft.sh
       - name: zshenv agent shell tests
         run: bash scripts/test-zshenv-agent-shell.sh
       - name: git config parses
@@ -115,4 +117,4 @@ jobs:
             done
           done
       - name: bash syntax
-        run: bash -n bin/dots bin/dots-secret bin/dots-agents bin/claude-ctx bootstrap
+        run: bash -n bin/dots bin/dots-draft bin/dots-secret bin/dots-agents bin/claude-ctx bootstrap
