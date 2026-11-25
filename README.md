@@ -52,15 +52,17 @@ agent CLIs that you use (see [Manual steps](#manual-steps)).
 bin/dots                 # cross-platform CLI (install / doctor / t3 / secret)
 bin/dots-secret          # env var + API key manager (Infisical)
 bin/dots-agents          # MCP/skills translator for the agent CLIs
+bin/dots-draft           # first-draft ledger, Codex reviews and the measure
 bootstrap               # first-run entry point
 config/contexts         # client name → Infisical project + git remote patterns
 config/agents/          # global + client MCP servers for the agent CLIs
 lib/agents/*.jq         # MCP server translation filters
 config/hosts            # machine → ssh target for peer secret sync
-hooks/pre-commit        # gitleaks secret scan
+hooks/pre-commit        # gitleaks secret scan; first-draft scrub of skills/
 packages/Brewfile       # macOS packages
 packages/apt.txt        # Linux packages (one per line, # comments)
 packages/agent-skills   # global third-party skills for the agent CLIs
+skills/<name>/          # first-party skills, linked by dots skills
 packages/agent-plugins  # native Codex and OpenCode plugins
 scripts/macos-defaults.sh
 themes/tokyo-night-storm/palette.sh
@@ -93,6 +95,7 @@ stow --no-folding -d "$DOTFILES/stow/<group>" -t "$HOME" <pkg>
 | `dots agents sync [--global-only\|--project-only]` | Translate `config/agents`, project `.mcp.json` and project skills into Claude Code, Codex and OpenCode config |
 | `dots secret <cmd>` | Env vars / API keys: `set`, `get`, `ls`, `rm`, `sync`, `import`, `ctx`, `run`, `reload`, `doctor` |
 | `dots secret --ctx NAME <cmd>` | Same commands against a client context project |
+| `dots draft <cmd>` | First-draft changes: `new`, `review`, `triage`, `protect`, `check`, `close`, `report`, `classes`, `scrub` (see [docs/first-draft.md](docs/first-draft.md)) |
 
 After the first install, `dots` is on your `PATH` via `~/.local/bin/dots`.
 
@@ -103,6 +106,8 @@ Two guides cover recovery and agent setup:
 - [docs/agent-workflow.md](docs/agent-workflow.md) — how terminal Claude,
   terminal Codex, OpenCode and T3 Code run, plus permissions, delegation and
   secret scope.
+- [docs/first-draft.md](docs/first-draft.md) — the spec-first workflow that
+  makes the first review of a change find no P1, and its measure.
 
 ## CI
 
@@ -172,6 +177,11 @@ one-time hook trust: run `/hooks` in an interactive session. Claude Code
 plugins stay in `stow/common/claude/.claude/settings.json`; the
 `pstack-models.md` sheets stowed from `stow/common/codex` and
 `stow/common/opencode` turn pstack's routing hook off there.
+
+First-party skills live in `skills/<name>/` in this repo. `dots skills sync`
+links each one into `~/.agents/skills` and `~/.claude/skills` with a symlink, so
+an edit in the repo takes effect at once. It never replaces a real folder with
+the same name; it reports a conflict. `dots doctor` checks both links.
 
 Project-specific skills belong in each project's own repo, not in this
 manifest.

@@ -11,6 +11,7 @@ When interacting with Cloudflare, use the cf CLI unless the project has a Wrangl
 ## How we work: discuss here, delegate implementation to OpenCode
 
 - Discuss design, tradeoffs and approach with me directly. Read the code yourself so the discussion stays grounded.
+- For a feature or any behaviour change, follow the `first-draft` skill: tier the change, write the spec, get the Codex reviews through `dots draft`, and triage every finding. Tier 0 changes (a one-line fix, a rename, a config value) skip it.
 - Delegate the implementation to the `oc-worker` subagent (`~/.claude/agents/oc-worker.md`). It runs `opencode run -m opencode-go/deepseek-v4.1-flash`. Don't write the code yourself unless I ask, or the fix is tiny enough that writing a brief would take longer.
 - Write each `oc-worker` brief as a complete, standalone task. DeepSeek sees nothing from our conversation. Run independent pieces in parallel.
 - Start `oc-worker` in the background (`run_in_background: true`) by default, and keep working or talking with me while it runs. It runs OpenCode in the background too and reports when OpenCode finishes.
