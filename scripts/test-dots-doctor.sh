@@ -315,10 +315,12 @@ contains "first-draft: up to date" "$out" "second sync reports the first-party l
 ln -s "$ROOT/skills/old-fp" "$HOME/.agents/skills/old-fp"
 ln -s "../../.agents/skills/old-fp" "$HOME/.claude/skills/old-fp"
 out="$("$DOTS" skills sync 2>&1)" || fail "dots skills sync failed on a stale link: $out"
-[ ! -e "$HOME/.agents/skills/old-fp" ] && [ ! -L "$HOME/.agents/skills/old-fp" ] \
-  || fail "stale ~/.agents/skills/old-fp link was not removed"
-[ ! -e "$HOME/.claude/skills/old-fp" ] && [ ! -L "$HOME/.claude/skills/old-fp" ] \
-  || fail "stale ~/.claude/skills/old-fp link was not removed"
+if [ -e "$HOME/.agents/skills/old-fp" ] || [ -L "$HOME/.agents/skills/old-fp" ]; then
+  fail "stale ~/.agents/skills/old-fp link was not removed"
+fi
+if [ -e "$HOME/.claude/skills/old-fp" ] || [ -L "$HOME/.claude/skills/old-fp" ]; then
+  fail "stale ~/.claude/skills/old-fp link was not removed"
+fi
 
 # 5d. A real folder where a first-party link belongs is a conflict, not a target.
 rm -f "$HOME/.agents/skills/first-draft"
