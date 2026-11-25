@@ -74,7 +74,12 @@ Done when all three pass. The first code review must see a complete draft.
 
 Run `dots draft review <id> code` with `run_in_background: true`, and wait for the notice. Round 1 is the measured review.
 
-Triage every finding. Send the accepted P1 and P2 findings to the implementer as a fix-up brief with the same session ID. Give the evidence, the scenario and the agreed fix for each finding. Then repeat step 6 checks and run the next review round.
+Triage every finding. Send the accepted P1 and P2 findings as fix-up briefs, each with the evidence, the scenario and the agreed fix:
+
+- A finding that needs a new or changed protected test goes first to the test writer, with its session ID. Check that the new test fails on the current code for the reason in the finding, or passes when it only guards an order or a property that the code already has. Then run `dots draft protect` again with every test file.
+- Every other finding goes to the implementer, with its session ID.
+
+Then repeat the step 6 checks and run the next review round.
 
 Stop after a round with no accepted P1 or P2, or after round 3. Then report to the user: the accepted findings that are still open, the P3 findings, and the first-review P1 count.
 
