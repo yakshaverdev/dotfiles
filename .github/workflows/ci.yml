@@ -23,6 +23,7 @@ jobs:
           stow/common/tmux/.config/tmux/*.sh
       - name: zsh syntax
         run: |
+          zsh -n stow/common/zsh/.zshenv
           zsh -n stow/common/zsh/.zshrc
           for f in stow/common/zsh/.config/zsh/*.zsh; do
             zsh -n "$f"
@@ -48,6 +49,8 @@ jobs:
         run: bash scripts/test-dots-version.sh
       - name: dots doctor tests
         run: bash scripts/test-dots-doctor.sh
+      - name: zshenv agent shell tests
+        run: bash scripts/test-zshenv-agent-shell.sh
       - name: git config parses
         run: git config --file stow/common/git/.config/git/config --list >/dev/null
 

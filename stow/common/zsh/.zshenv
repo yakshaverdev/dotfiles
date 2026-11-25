@@ -36,4 +36,15 @@ if [[ ! -o interactive ]] && \
     source "$HOME/.config/zsh/contexts.zsh" >/dev/null 2>&1
   fi
 fi
+
+# Agent commands parse globs and `=` words like bash. An agent runs each
+# command as `zsh -c '<command>'` and writes it in bash syntax. With the zsh
+# defaults, an unmatched glob such as `grep --include=*.py` stops the command
+# ("no matches found"), and `echo ====` fails as an `=cmd` lookup. These two
+# errors were 96% of the zsh errors in Claude Code sessions. Interactive
+# shells and zsh scripts keep the zsh defaults.
+if [[ ! -o interactive && -n ${ZSH_EXECUTION_STRING:-} ]] && \
+   [[ -n "${CLAUDECODE:-}${T3CODE_THREAD_ID:-}${CODEX_THREAD_ID:-}${CODEX_SANDBOX:-}${OPENCODE:-}" ]]; then
+  setopt no_nomatch no_equals
+fi
 true

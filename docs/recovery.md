@@ -151,7 +151,7 @@ bash --norc
 
 Check these files in this order:
 
-1. `~/.zshenv` — read by every zsh, including non-interactive shells. It sets PATH, sets `DOTS_SHIM_DIR`, sources `~/.config/dot/secrets.zsh`, and sources `contexts.zsh` for agent shells and when a context is inherited.
+1. `~/.zshenv` — read by every zsh, including non-interactive shells. It sets PATH, sets `DOTS_SHIM_DIR`, sources `~/.config/dot/secrets.zsh`, and sources `contexts.zsh` for agent shells and when a context is inherited. For agent commands (`zsh -c` with an agent marker), it also sets `no_nomatch` and `no_equals`, so unmatched globs and `=` words stay literal, as in bash.
 2. `~/.zprofile` — Homebrew setup on macOS.
 3. `~/.zshrc` — sources `~/.env`, `~/.config/dot/secrets.zsh`, `~/.config/zsh/contexts.zsh`, `common.zsh`, the OS file, `agents.zsh`, `hosts/<host>.zsh`, `local.zsh` and `plugins.zsh`.
 4. `~/.config/zsh/common.zsh`, `agents.zsh`, `contexts.zsh` and `plugins.zsh`.
