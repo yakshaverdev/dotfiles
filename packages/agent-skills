@@ -1,4 +1,6 @@
 # Global third-party skills shared by Claude Code, Codex and OpenCode.
+# First-party skills live in skills/<name>/ in this repo. dots skills links
+# them into ~/.agents/skills and ~/.claude/skills; do not list them here.
 #
 # Format: one entry per line, <source> <comma-separated skill names>.
 # `dots skills` installs the missing names into ~/.agents/skills and links

@@ -41,6 +41,7 @@ MANUAL=()
 
 AGENT_SKILLS_MANIFEST="$DOTFILES/packages/agent-skills"
 AGENT_PLUGINS_MANIFEST="$DOTFILES/packages/agent-plugins"
+FIRST_PARTY_SKILLS_DIR="$DOTFILES/skills"
 SKILL_LOCK="$HOME/.agents/.skill-lock.json"
 
 # ── Small helpers ──────────────────────────────────────────────────────────
@@ -50,6 +51,9 @@ err()  { printf 'ERROR: %s\n' "$*" >&2; }
 fail() { FAILURES+=("$*"); }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# Physical path of a directory ("" when it does not exist).
+dir_realpath() { (cd -P "$1" 2>/dev/null && pwd); }
 
 # BEGIN version_ge
 # Compare dotted numeric versions. Exit 0 when $1 >= $2.
@@ -809,6 +813,27 @@ cmd_doctor() {
     fi
   fi
 
+  # First-party skills live in skills/ and must be symlinked into both agent
+  # skill folders, resolving to the tracked copy.
+  local fp_total=0 fp_name fp_real fp_path
+  local -a fp_failing=()
+  while IFS= read -r fp_name; do
+    [[ -n "$fp_name" ]] || continue
+    fp_total=$((fp_total + 1))
+    fp_real="$(dir_realpath "$FIRST_PARTY_SKILLS_DIR/$fp_name")"
+    for fp_path in "$HOME/.agents/skills/$fp_name" "$HOME/.claude/skills/$fp_name"; do
+      if [[ ! -e "$fp_path" || "$(dir_realpath "$fp_path")" != "$fp_real" ]]; then
+        fp_failing+=("$fp_name")
+        break
+      fi
+    done
+  done < <(first_party_skill_names)
+  if ((${#fp_failing[@]})); then
+    bad "first-party skills not linked to skills/: $(doctor_join_words 10 "${fp_failing[@]}") (run: dots skills sync)"
+  elif ((fp_total > 0)); then
+    ok "$fp_total first-party skills linked from skills/"
+  fi
+
   # Agent plugins: Codex config table or cache dir, OpenCode plugin array, and
   # the Claude plugins enabled in the tracked settings.
   info "→ Agent plugins"
@@ -1297,6 +1322,17 @@ manifest_skill_names() {
   done < <(manifest_rows "$AGENT_SKILLS_MANIFEST")
 }
 
+# Emit every first-party skill in skills/ (a folder holding a SKILL.md),
+# sorted, one per line.
+first_party_skill_names() {
+  local d
+  [[ -d "$FIRST_PARTY_SKILLS_DIR" ]] || return 0
+  for d in "$FIRST_PARTY_SKILLS_DIR"/*/; do
+    [[ -f "$d/SKILL.md" ]] || continue
+    basename "$d"
+  done | sort
+}
+
 # Emit "<plugin-id> <source>" for one agent from packages/agent-plugins.
 manifest_plugins_for() {
   local agent="$1" line entry id source
@@ -1311,6 +1347,85 @@ manifest_plugins_for() {
   done < <(manifest_rows "$AGENT_PLUGINS_MANIFEST")
 }
 
+# Link first-party skills from skills/ into both agent skill folders: an
+# absolute link under ~/.agents/skills and a relative link under
+# ~/.claude/skills. An edit in the repo takes effect at once, with no npx and
+# no network. Conflicting real folders are never touched.
+skills_link_first_party() {
+  local name src a c link target created relinked total=0
+  info "→ First-party skills (skills/)"
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    total=$((total + 1))
+    src="$FIRST_PARTY_SKILLS_DIR/$name"
+    a="$HOME/.agents/skills/$name"
+    c="$HOME/.claude/skills/$name"
+    mkdir -p "$HOME/.agents/skills" "$HOME/.claude/skills"
+    created=0
+    relinked=0
+
+    # ~/.agents/skills/<name>: absolute link to the repo copy.
+    if [[ -L "$a" ]]; then
+      if [[ "$(dir_realpath "$a")" != "$(dir_realpath "$src")" ]]; then
+        ln -sfn "$src" "$a"
+        relinked=1
+      fi
+    elif [[ -e "$a" ]]; then
+      warn "first-party skill $name: $a is not a symlink"
+      fail "first-party skill $name: $a is not a symlink; move it away and rerun dots skills sync"
+      continue
+    else
+      ln -s "$src" "$a"
+      created=1
+    fi
+
+    # ~/.claude/skills/<name>: relative link through ~/.agents/skills.
+    if [[ -L "$c" ]]; then
+      if [[ "$(dir_realpath "$c")" != "$(dir_realpath "$src")" ]]; then
+        ln -sfn "../../.agents/skills/$name" "$c"
+        relinked=1
+      fi
+    elif [[ -e "$c" ]]; then
+      warn "first-party skill $name: $c is not a symlink"
+      fail "first-party skill $name: $c is not a symlink; move it away and rerun dots skills sync"
+      continue
+    else
+      ln -s "../../.agents/skills/$name" "$c"
+      created=1
+    fi
+
+    if ((relinked)); then
+      info "  $name: relinked"
+    elif ((created)); then
+      info "  $name: linked"
+    else
+      info "  $name: up to date"
+    fi
+  done < <(first_party_skill_names)
+
+  # Links this repo made for a skill folder that has since been deleted.
+  for link in "$HOME/.agents/skills"/*; do
+    [[ -L "$link" ]] || continue
+    target="$(readlink "$link" 2>/dev/null || true)"
+    case "$target" in
+      "$FIRST_PARTY_SKILLS_DIR"/*) ;;
+      *) continue ;;
+    esac
+    [[ -e "$link" ]] && continue
+    name="${link##*/}"
+    rm -f "$link"
+    info "  removed stale link $name"
+    c="$HOME/.claude/skills/$name"
+    if [[ -L "$c" && ! -e "$c" ]]; then
+      rm -f "$c"
+    fi
+  done
+
+  if ((total == 0)); then
+    info "  none"
+  fi
+}
+
 # Install manifest entries that are not present yet. Safe to rerun.
 skills_sync() {
   local prune="$1"
@@ -1318,6 +1433,7 @@ skills_sync() {
   local -a wanted=() missing=() extra_arr=()
   local name_file extras extra
 
+  skills_link_first_party
   info "→ Skills (~/.agents/skills)"
   if ! have npx || ! have node; then
     warn "npx/node not found — skipping skills"
@@ -1637,6 +1753,8 @@ Commands:
             into Claude Code, Codex and OpenCode config
   secret    Manage env vars / API keys (set, get, ls, rm, sync, import,
             reload, doctor)
+  draft     Spec-first changes: ledger, Codex reviews and the first-review
+            measure (see docs/first-draft.md)
 EOF
 }
 
@@ -1648,6 +1766,7 @@ case "${1:-}" in
   skills)  shift; cmd_skills "$@" ;;
   agents)  shift; exec "$DOTFILES/bin/dots-agents" "$@" ;;
   secret)  shift; exec "$DOTFILES/bin/dots-secret" "$@" ;;
+  draft)   shift; exec "$DOTFILES/bin/dots-draft" "$@" ;;
   -h|--help|help|"") usage ;;
   *) err "unknown command: $1"; usage; exit 1 ;;
 esac

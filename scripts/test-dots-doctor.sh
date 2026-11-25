@@ -105,9 +105,17 @@ skill_names() {
     | sed -e 's/[[:space:]]//g' -e '/^$/d'
 }
 
+# Every first-party skill in the repo (skills/<name>/SKILL.md), one per line.
+first_party_names() {
+  local d
+  for d in "$ROOT"/skills/*/; do
+    [ -f "$d/SKILL.md" ] && basename "$d"
+  done
+}
+
 # Rebuild the fake skill tree, skipping $1 (empty means keep every skill).
 make_skills() {
-  local skip="$1" name
+  local skip="$1" name fp
   rm -rf "$HOME/.agents/skills" "$HOME/.claude/skills"
   mkdir -p "$HOME/.agents/skills" "$HOME/.claude/skills"
   while IFS= read -r name; do
@@ -117,6 +125,15 @@ make_skills() {
     ln -s "../../.agents/skills/$name" "$HOME/.claude/skills/$name"
   done <<EOF
 $(skill_names)
+EOF
+  # First-party skills are symlinks into this repo, exactly as dots makes them.
+  while IFS= read -r fp; do
+    [ -n "$fp" ] || continue
+    [ "$fp" = "$skip" ] && continue
+    ln -s "$ROOT/skills/$fp" "$HOME/.agents/skills/$fp"
+    ln -s "../../.agents/skills/$fp" "$HOME/.claude/skills/$fp"
+  done <<EOF
+$(first_party_names)
 EOF
 }
 
@@ -157,6 +174,26 @@ section="$(skills_section "$out")"
 [ -n "$section" ] || fail "Agent skills section missing from doctor output"
 contains "✓" "$section" "skills section reports ok when every skill is present"
 not_contains "✗" "$section" "skills section must not report a problem when all skills exist"
+
+# 2b. A missing first-party Claude link is reported against skills/.
+rm -f "$HOME/.claude/skills/first-draft"
+rc=0
+out="$("$DOTS" doctor --local 2>&1)" || rc=$?
+section="$(skills_section "$out")"
+contains "first-draft" "$section" "missing first-party Claude link is named"
+contains "✗" "$section" "missing first-party Claude link is a problem"
+[ "$rc" -ne 0 ] || fail "doctor --local exited 0 with a missing first-party link"
+
+# 2c. A first-party link that resolves elsewhere is a problem too.
+mkdir -p "$TMPROOT/other-fp"
+printf 'placeholder\n' > "$TMPROOT/other-fp/SKILL.md"
+rm -f "$HOME/.agents/skills/first-draft"
+ln -s "$TMPROOT/other-fp" "$HOME/.agents/skills/first-draft"
+out="$("$DOTS" doctor --local 2>&1 || true)"
+section="$(skills_section "$out")"
+contains "first-draft" "$section" "mislinked first-party skill is named"
+contains "✗" "$section" "mislinked first-party skill is a problem"
+make_skills ""
 
 section_of() { # output heading (the text after →)
   printf '%s\n' "$1" | awk -v h="→ $2" '
@@ -260,6 +297,41 @@ grep -qF 'plugin install pstack@pstack-claude' "$CLAUDE_LOG" \
 eq_install_count="$(grep -c 'plugin install' "$CLAUDE_LOG" || true)"
 [ "$eq_install_count" -eq 1 ] \
   || fail "skills sync installed already-present plugins ($eq_install_count calls)"
+
+# 5b. dots skills sync links first-party skills without npx or network access.
+resolve_dir() { (cd -P "$1" 2>/dev/null && pwd -P); }
+rm -f "$HOME/.agents/skills/first-draft" "$HOME/.claude/skills/first-draft"
+rc=0
+out="$("$DOTS" skills sync 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "dots skills sync failed to link first-party skills: $out"
+[ "$(resolve_dir "$HOME/.agents/skills/first-draft")" = "$(resolve_dir "$ROOT/skills/first-draft")" ] \
+  || fail "$HOME/.agents/skills/first-draft does not resolve to skills/first-draft"
+[ "$(resolve_dir "$HOME/.claude/skills/first-draft")" = "$(resolve_dir "$ROOT/skills/first-draft")" ] \
+  || fail "$HOME/.claude/skills/first-draft does not resolve to skills/first-draft"
+out="$("$DOTS" skills sync 2>&1)" || fail "second dots skills sync failed: $out"
+contains "first-draft: up to date" "$out" "second sync reports the first-party link as current"
+
+# 5c. A link left behind by a deleted first-party skill is removed.
+ln -s "$ROOT/skills/old-fp" "$HOME/.agents/skills/old-fp"
+ln -s "../../.agents/skills/old-fp" "$HOME/.claude/skills/old-fp"
+out="$("$DOTS" skills sync 2>&1)" || fail "dots skills sync failed on a stale link: $out"
+[ ! -e "$HOME/.agents/skills/old-fp" ] && [ ! -L "$HOME/.agents/skills/old-fp" ] \
+  || fail "stale ~/.agents/skills/old-fp link was not removed"
+[ ! -e "$HOME/.claude/skills/old-fp" ] && [ ! -L "$HOME/.claude/skills/old-fp" ] \
+  || fail "stale ~/.claude/skills/old-fp link was not removed"
+
+# 5d. A real folder where a first-party link belongs is a conflict, not a target.
+rm -f "$HOME/.agents/skills/first-draft"
+mkdir -p "$HOME/.agents/skills/first-draft"
+printf 'keep me\n' > "$HOME/.agents/skills/first-draft/file"
+rc=0
+out="$("$DOTS" skills sync 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "dots skills sync exited 0 when a first-party link is a real folder"
+contains "first-draft" "$out" "conflicting first-party folder is named"
+[ -f "$HOME/.agents/skills/first-draft/file" ] \
+  || fail "dots skills sync touched the real first-party folder"
+rm -rf "$HOME/.agents/skills/first-draft"
+make_skills ""
 
 # 6. npm below 11.10.0 is upgraded by dots install's helper.
 npm_gate() { # version
