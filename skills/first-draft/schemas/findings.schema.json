@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "first-draft review findings",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "findings"],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "Two or three sentences: the overall verdict and the biggest risk."
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "dimension", "title", "evidence", "scenario", "fix"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["P1", "P2", "P3"] },
+          "dimension": {
+            "type": "string",
+            "enum": [
+              "contracts", "inputs", "lifecycle", "concurrency", "partial-failure",
+              "resources", "environment", "callers", "security", "cost", "verification"
+            ]
+          },
+          "title": { "type": "string", "description": "One line: the defect." },
+          "evidence": { "type": "string", "description": "file:line, or a spec section name." },
+          "scenario": { "type": "string", "description": "A concrete input or state, and the wrong result it causes." },
+          "fix": { "type": "string", "description": "The smallest change that removes the defect." }
+        }
+      }
+    }
+  }
+}
