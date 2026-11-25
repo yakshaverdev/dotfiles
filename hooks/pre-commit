@@ -2,6 +2,24 @@
 # Secret scan for staged changes. Uses gitleaks; bypass with SKIP_GITLEAKS=1.
 set -uo pipefail
 
+# ── first-draft scrub ──────────────────────────────────────────────────────
+# A staged skill file must not name a client repo, path or context.
+if [[ "${SKIP_FIRST_DRAFT_SCRUB:-0}" != "1" ]]; then
+  staged_skills="$(git diff --cached --name-only --diff-filter=ACMR -- skills/ || true)"
+  if [[ -n "$staged_skills" ]]; then
+    toplevel="$(git rev-parse --show-toplevel)"
+    scrub_args=()
+    while IFS= read -r staged_file; do
+      [[ -n "$staged_file" ]] || continue
+      scrub_args+=("$toplevel/$staged_file")
+    done <<< "$staged_skills"
+    if ! "$toplevel/bin/dots-draft" scrub "${scrub_args[@]}"; then
+      echo "first-draft scrub: a staged skill file names a client repo, path or context. Fix it, or set SKIP_FIRST_DRAFT_SCRUB=1." >&2
+      exit 1
+    fi
+  fi
+fi
+
 # Non-interactive shells (git GUIs, agents) often lack mise on PATH.
 if ! command -v gitleaks >/dev/null 2>&1; then
   for m in mise "$HOME/.local/bin/mise" /opt/homebrew/bin/mise; do
