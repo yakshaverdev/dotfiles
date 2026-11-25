@@ -77,6 +77,19 @@ The global `~/.claude/CLAUDE.md` holds the working rules:
 - pstack work is the exception. pstack picks its own models from `pstack-models.md`.
 - On another linked machine, T3's `delegate_task` with provider `opencode` and model `opencode-go/deepseek-v4.1-flash` is the equivalent.
 
+## First draft
+
+For a change with a behaviour change, Claude follows the `first-draft` skill (`skills/first-draft`). See [`first-draft.md`](first-draft.md).
+
+| Role | Agent | How it starts |
+|---|---|---|
+| Orchestrator: tier, spec, triage, diff review | Claude (terminal or T3) | The skill |
+| Spec and code reviewer | Codex | `dots draft review`, which runs `codex exec --sandbox read-only --ephemeral --output-schema` |
+| Test writer | OpenCode on `opencode-go/kimi-k3.1-pro` | `oc-worker`, with its own `ses_` ID |
+| Implementer | OpenCode on the default model | `oc-worker`, with its own `ses_` ID |
+
+The ledger is `~/.local/state/first-draft/` on each machine. It holds client data and stays out of git. `dots draft report --all-hosts` reads the other machine's ledger over ssh, with the targets in `config/hosts`.
+
 ## pstack
 
 pstack is installed as a Claude plugin (`pstack@pstack-claude`), a Codex plugin and an OpenCode plugin.
